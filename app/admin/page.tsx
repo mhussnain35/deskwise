@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { ArrowLeft, BookOpen, Layers, Database, HardDriveUpload, RefreshCw, CheckCircle2, FileText, Plus, Sparkles } from "lucide-react";
+import { ArrowLeft, BookOpen, Layers, Database, RefreshCw, CheckCircle2, FileText, Plus, Sparkles, Loader2 } from "lucide-react";
 
 interface KBDoc {
   id: string;
@@ -19,6 +19,7 @@ export default function AdminPage() {
   const [totalChunks, setTotalChunks] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
+  const [isReindexing, setIsReindexing] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
 
   // New Doc Form State
@@ -47,6 +48,26 @@ export default function AdminPage() {
     }
   };
 
+  const handleReindex = async () => {
+    setIsReindexing(true);
+    setStatusMsg("");
+    try {
+      const res = await fetch("/api/admin/reindex", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setStatusMsg(data.message || "Knowledge base re-indexed successfully!");
+        fetchDocs();
+      } else {
+        setStatusMsg(data.error || "Re-indexing failed.");
+      }
+    } catch (err) {
+      console.error("Reindex error:", err);
+      setStatusMsg("Failed to connect to re-index server.");
+    } finally {
+      setIsReindexing(false);
+    }
+  };
+
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !newContent.trim()) return;
@@ -66,7 +87,7 @@ export default function AdminPage() {
 
       const data = await res.json();
       if (res.ok) {
-        setStatusMsg(data.message || "Document uploaded successfully!");
+        setStatusMsg(data.message || "Document uploaded & indexed successfully!");
         setNewTitle("");
         setNewContent("");
         setShowUploadModal(false);
@@ -102,12 +123,26 @@ export default function AdminPage() {
                 </span>
               </h1>
               <p className="text-xs text-slate-400">
-                Manage SaaS support documentation, view semantic vector chunking metrics, and re-index embeddings.
+                Manage SaaS support documentation, view semantic vector chunking metrics, and trigger dynamic re-indexing.
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={handleReindex}
+              disabled={isReindexing}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 font-medium text-xs transition-colors disabled:opacity-50"
+              title="Re-chunk and re-embed all documents"
+            >
+              {isReindexing ? (
+                <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+              ) : (
+                <RefreshCw className="w-4 h-4 text-indigo-400" />
+              )}
+              <span>{isReindexing ? "Re-indexing..." : "Re-index All Docs"}</span>
+            </button>
+
             <button
               onClick={() => setShowUploadModal(true)}
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs shadow-lg shadow-indigo-600/20 transition-colors"
@@ -169,7 +204,7 @@ export default function AdminPage() {
               className="text-xs text-slate-400 hover:text-white flex items-center gap-1.5 transition-colors"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>Refresh</span>
+              <span>Refresh Table</span>
             </button>
           </div>
 

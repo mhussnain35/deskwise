@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { chunkMarkdown } from "@/lib/rag/chunker";
+import { runFullIngestion } from "@/lib/rag/ingestor";
 
 const KB_DOCS_DIR = path.join(process.cwd(), "kb-docs");
 
@@ -63,13 +64,14 @@ export async function POST(req: NextRequest) {
     const targetPath = path.join(KB_DOCS_DIR, safeFilename);
     fs.writeFileSync(targetPath, content, "utf-8");
 
-    const chunks = chunkMarkdown(safeFilename, content);
+    // Automatically trigger re-indexing
+    const report = await runFullIngestion();
 
     return NextResponse.json({
       success: true,
       filename: safeFilename,
-      chunkCount: chunks.length,
-      message: `Successfully uploaded ${safeFilename} (${chunks.length} section chunks generated).`,
+      chunkCount: report.documents.find((d) => d.filename === safeFilename)?.chunkCount || 0,
+      message: `Successfully uploaded ${safeFilename} and re-indexed knowledge base (${report.totalChunks} total section chunks).`,
     });
   } catch (error: any) {
     console.error("[Admin API] Error uploading doc:", error);
