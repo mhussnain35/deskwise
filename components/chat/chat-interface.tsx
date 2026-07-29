@@ -1,13 +1,22 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Send, Bot, User, Sparkles, RefreshCw, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Send, Bot, User, Sparkles, RefreshCw, FileText, ChevronDown, ChevronUp, ExternalLink, ShieldCheck } from "lucide-react";
+
+interface Citation {
+  id: string;
+  title: string;
+  section: string;
+  content: string;
+  score: number;
+}
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   isStreaming?: boolean;
+  citations?: Citation[];
 }
 
 const SAMPLE_PROMPTS = [
@@ -26,7 +35,6 @@ export default function ChatInterface() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    // Initialize or retrieve session ID
     let storedSession = localStorage.getItem("deskwise_session_id");
     if (!storedSession) {
       storedSession = "session_" + Math.random().toString(36).substring(2, 9);
@@ -69,6 +77,17 @@ export default function ChatInterface() {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
+      // Parse citations header if provided
+      let parsedCitations: Citation[] = [];
+      const citationsHeader = response.headers.get("X-Citations");
+      if (citationsHeader) {
+        try {
+          parsedCitations = JSON.parse(decodeURIComponent(citationsHeader));
+        } catch (e) {
+          console.warn("Failed to parse X-Citations header:", e);
+        }
+      }
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
@@ -88,7 +107,9 @@ export default function ChatInterface() {
 
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.id === assistantMessageId ? { ...msg, isStreaming: false } : msg
+          msg.id === assistantMessageId
+            ? { ...msg, isStreaming: false, citations: parsedCitations }
+            : msg
         )
       );
     } catch (err: any) {
@@ -134,8 +155,8 @@ export default function ChatInterface() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="font-semibold text-lg tracking-tight text-white">Deskwise</h1>
-              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                Phase 1: Streaming
+              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                <ShieldCheck className="w-3 h-3" /> RAG Enabled
               </span>
             </div>
             <p className="text-xs text-slate-400">SaaS Billing & Support Agent</p>
@@ -169,7 +190,7 @@ export default function ChatInterface() {
             <div>
               <h2 className="text-xl font-medium text-white mb-2">Welcome to Deskwise</h2>
               <p className="text-sm text-slate-400 leading-relaxed">
-                Your intelligent SaaS billing assistant. Ask any question about pricing, upgrades, payment failures, or cancellation policies.
+                Your intelligent SaaS billing assistant powered by retrieval-augmented generation. Ask any question about pricing, upgrades, payment failures, or refunds.
               </p>
             </div>
 
@@ -208,17 +229,24 @@ export default function ChatInterface() {
                 {msg.role === "user" ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
               </div>
 
-              {/* Message Bubble */}
-              <div
-                className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                  msg.role === "user"
-                    ? "bg-indigo-600 text-white rounded-tr-xs"
-                    : "bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-xs shadow-sm"
-                }`}
-              >
-                <div className="whitespace-pre-wrap">{msg.content}</div>
-                {msg.isStreaming && (
-                  <span className="inline-block w-2 h-4 ml-1 bg-indigo-400 animate-pulse rounded-xs vertical-middle" />
+              {/* Message Bubble & Citations */}
+              <div className="flex flex-col space-y-2 max-w-[85%] sm:max-w-[78%]">
+                <div
+                  className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                    msg.role === "user"
+                      ? "bg-indigo-600 text-white rounded-tr-xs"
+                      : "bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-xs shadow-sm"
+                  }`}
+                >
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                  {msg.isStreaming && (
+                    <span className="inline-block w-2 h-4 ml-1 bg-indigo-400 animate-pulse rounded-xs vertical-middle" />
+                  )}
+                </div>
+
+                {/* Source Citations Box */}
+                {msg.role === "assistant" && msg.citations && msg.citations.length > 0 && (
+                  <CitationsList citations={msg.citations} />
                 )}
               </div>
             </div>
@@ -256,10 +284,66 @@ export default function ChatInterface() {
         </form>
 
         <div className="flex items-center justify-between text-[11px] text-slate-500 mt-2 px-1">
-          <span>Deskwise Phase 1 • Next.js + Gemini 2.0 Flash + Neon</span>
+          <span>Deskwise RAG • Gemini 2.0 Flash + Hybrid Search</span>
           <span>Press Enter to send</span>
         </div>
       </footer>
+    </div>
+  );
+}
+
+/** Expandable Source Citations Component */
+function CitationsList({ citations }: { citations: Citation[] }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div className="mt-1 border border-slate-800/80 bg-slate-900/40 rounded-xl p-3 text-xs">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center justify-between w-full text-slate-400 hover:text-slate-200 font-medium transition-colors"
+      >
+        <div className="flex items-center gap-1.5">
+          <FileText className="w-3.5 h-3.5 text-indigo-400" />
+          <span>Retrieved {citations.length} Source Document{citations.length > 1 ? "s" : ""}</span>
+        </div>
+        <div className="flex items-center gap-1 text-[11px] text-indigo-400">
+          <span>{isExpanded ? "Hide Sources" : "View Sources"}</span>
+          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        </div>
+      </button>
+
+      {isExpanded && (
+        <div className="mt-3 space-y-2.5 pt-2 border-t border-slate-800/60">
+          {citations.map((c, idx) => (
+            <div
+              key={c.id || idx}
+              className="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80 space-y-1"
+            >
+              <div className="flex items-center justify-between text-slate-300 font-medium">
+                <div className="flex items-center gap-1.5 truncate">
+                  <span className="w-4 h-4 rounded bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-[10px] shrink-0 font-mono">
+                    {idx + 1}
+                  </span>
+                  <span className="truncate">{c.title}</span>
+                </div>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0 font-mono">
+                  {(c.score * 100).toFixed(0)}% Match
+                </span>
+              </div>
+
+              {c.section && (
+                <p className="text-[11px] text-indigo-300/80 font-mono font-medium">
+                  📌 {c.section}
+                </p>
+              )}
+
+              <p className="text-slate-400 text-[11px] leading-relaxed line-clamp-3 bg-slate-900/60 p-2 rounded border border-slate-800/40">
+                "{c.content}"
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
