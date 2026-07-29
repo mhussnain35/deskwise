@@ -32,6 +32,8 @@ export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true); // cold-start / history load
+  const [rateLimitMsg, setRateLimitMsg] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
   const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -45,7 +47,7 @@ export default function ChatInterface() {
     }
     setSessionId(storedSession);
 
-    // Load past conversation history if available
+    // Load past conversation history (covers Neon cold-start latency)
     fetch(`/api/history/${storedSession}`)
       .then((res) => res.json())
       .then((data) => {
@@ -53,7 +55,8 @@ export default function ChatInterface() {
           setMessages(data.messages);
         }
       })
-      .catch((err) => console.warn("Could not load session history:", err));
+      .catch((err) => console.warn("Could not load session history:", err))
+      .finally(() => setIsInitializing(false));
   }, []);
 
   useEffect(() => {
@@ -78,6 +81,7 @@ export default function ChatInterface() {
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInput("");
     setIsLoading(true);
+    setRateLimitMsg(null);
 
     try {
       const response = await fetch("/api/chat", {
@@ -85,6 +89,15 @@ export default function ChatInterface() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: query, sessionId }),
       });
+
+      // Handle rate limit gracefully (429)
+      if (response.status === 429) {
+        const data = await response.json();
+        const retrySec = Math.ceil((data.retryAfterMs || 60000) / 1000);
+        setRateLimitMsg(`You're sending messages too quickly. Please wait ${retrySec}s and try again.`);
+        setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
+        return;
+      }
 
       if (!response.ok || !response.body) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -165,10 +178,24 @@ export default function ChatInterface() {
 
   const handleClearChat = () => {
     setMessages([]);
+    setRateLimitMsg(null);
     const newSession = "session_" + Math.random().toString(36).substring(2, 9);
     localStorage.setItem("deskwise_session_id", newSession);
     setSessionId(newSession);
   };
+
+  // Show cold-start initializing overlay
+  if (isInitializing) {
+    return (
+      <div className="flex flex-col h-screen max-w-5xl mx-auto w-full bg-slate-950 text-slate-100 font-sans shadow-2xl overflow-hidden border-x border-slate-800/60 items-center justify-center gap-4">
+        <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg animate-pulse">
+          <Bot className="w-6 h-6 text-white" />
+        </div>
+        <p className="text-sm text-slate-400">Connecting to Deskwise…</p>
+        <p className="text-xs text-slate-600">Warming up database connection</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen max-w-5xl mx-auto w-full bg-slate-950 text-slate-100 font-sans shadow-2xl overflow-hidden border-x border-slate-800/60">
@@ -314,6 +341,14 @@ export default function ChatInterface() {
 
       {/* Input Form */}
       <footer className="p-4 sm:p-6 bg-slate-900/80 border-t border-slate-800/80 backdrop-blur-md">
+        {rateLimitMsg && (
+          <div className="mx-4 mb-3 px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-center gap-2">
+            <span className="text-amber-400">⚠️</span>
+            <span>{rateLimitMsg}</span>
+            <button onClick={() => setRateLimitMsg(null)} className="ml-auto text-amber-500 hover:text-amber-300">✕</button>
+          </div>
+        )}
+
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -342,7 +377,7 @@ export default function ChatInterface() {
 
         <div className="flex items-center justify-between text-[11px] text-slate-500 mt-2 px-1">
           <span>Deskwise RAG • Gemini 2.0 Flash + Hybrid Search</span>
-          <span>Press Enter to send</span>
+          <span className="text-slate-600">Rate limit: 10 msg/min per session</span>
         </div>
       </footer>
     </div>

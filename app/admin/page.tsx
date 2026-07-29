@@ -188,6 +188,24 @@ export default function AdminPage() {
           </div>
         </div>
 
+        {/* Infra Tier Note */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/5 border border-amber-500/15 text-amber-300/80">
+            <span className="text-amber-400 mt-0.5 shrink-0">⚠️</span>
+            <div>
+              <p className="font-semibold text-amber-300 mb-0.5">Qdrant Cloud — Free Tier</p>
+              <p className="text-amber-300/60">Storage cap: ~1 GB · 1 cluster · Shared CPU. Sufficient for this KB (~47 chunks). Upgrade for production traffic.</p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-sky-500/5 border border-sky-500/15 text-sky-300/80">
+            <span className="text-sky-400 mt-0.5 shrink-0">ℹ️</span>
+            <div>
+              <p className="font-semibold text-sky-300 mb-0.5">Neon Postgres — Free Tier</p>
+              <p className="text-sky-300/60">Storage cap: 0.5 GB · Serverless (cold-start ~300 ms). First query after idle may be slow — handled via loading overlay.</p>
+            </div>
+          </div>
+        </div>
+
         {statusMsg && (
           <div className="p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />

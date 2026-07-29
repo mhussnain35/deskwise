@@ -3,6 +3,7 @@ import { ai, MODEL_NAME } from "@/lib/ai/gemini";
 import { db } from "@/lib/db";
 import { conversations, messages } from "@/lib/db/schema";
 import { retrieveContext } from "@/lib/rag/retriever";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { eq } from "drizzle-orm";
 
 export async function POST(req: NextRequest) {
@@ -14,6 +15,20 @@ export async function POST(req: NextRequest) {
     }
 
     const activeSessionId = sessionId || "default-session";
+
+    // Phase 8 — Rate limiting: 10 req / 60s per session
+    const rl = checkRateLimit(activeSessionId);
+    if (!rl.allowed) {
+      const retryAfter = Math.ceil(rl.resetMs / 1000);
+      return NextResponse.json(
+        {
+          error: `You're sending messages too quickly. Please wait ${retryAfter} seconds before trying again.`,
+          retryAfterMs: rl.resetMs,
+        },
+        { status: 429, headers: { "Retry-After": String(retryAfter) } }
+      );
+    }
+
     let conversationId: string | null = null;
 
     // 1. Database Operations: Log or find active conversation turn
