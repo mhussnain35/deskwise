@@ -27,10 +27,6 @@ export default function AdminPage() {
   const [newContent, setNewContent] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
 
-  useEffect(() => {
-    fetchDocs();
-  }, []);
-
   const fetchDocs = async () => {
     setIsLoading(true);
     try {
@@ -47,6 +43,10 @@ export default function AdminPage() {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchDocs();
+  }, []);
 
   const handleReindex = async () => {
     setIsReindexing(true);

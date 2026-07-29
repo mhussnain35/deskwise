@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Send, Bot, User, Sparkles, RefreshCw, FileText, ChevronDown, ChevronUp, ShieldCheck, ThumbsUp, ThumbsDown, Settings } from "lucide-react";
+import { Send, Bot, User, RefreshCw, FileText, ChevronDown, ChevronUp, ShieldCheck, ThumbsUp, ThumbsDown, Settings, Zap } from "lucide-react";
 import Link from "next/link";
 
 interface Citation {
@@ -27,6 +27,25 @@ const SAMPLE_PROMPTS = [
   "Why did my credit card payment fail?",
   "How do I request a tax invoice?",
 ];
+
+/** Lightweight markdown renderer: bold, inline code, line breaks */
+function renderMarkdown(text: string) {
+  return text.split("\n").map((line, lineIdx) => {
+    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return (
+      <span key={lineIdx}>
+        {parts.map((part, i) => {
+          if (part.startsWith("**") && part.endsWith("**"))
+            return <strong key={i} className="font-semibold text-white">{part.slice(2, -2)}</strong>;
+          if (part.startsWith("`") && part.endsWith("`"))
+            return <code key={i} className="px-1 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-[11px]">{part.slice(1, -1)}</code>;
+          return <span key={i}>{part}</span>;
+        })}
+        {lineIdx < text.split("\n").length - 1 && <br />}
+      </span>
+    );
+  });
+}
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -241,13 +260,18 @@ export default function ChatInterface() {
       <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full max-w-md mx-auto text-center space-y-6 py-12">
-            <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 shadow-inner">
-              <Sparkles className="w-8 h-8" />
+            <div className="relative">
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-xl shadow-indigo-500/20">
+                <Bot className="w-8 h-8 text-white" />
+              </div>
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-emerald-500 rounded-full border-2 border-slate-950 flex items-center justify-center">
+                <Zap className="w-2.5 h-2.5 text-white" />
+              </span>
             </div>
             <div>
-              <h2 className="text-xl font-medium text-white mb-2">Welcome to Deskwise</h2>
+              <h2 className="text-xl font-semibold text-white mb-2">Welcome to Deskwise</h2>
               <p className="text-sm text-slate-400 leading-relaxed">
-                Your intelligent SaaS billing assistant powered by retrieval-augmented generation. Ask any question about pricing, upgrades, payment failures, or refunds.
+                Your AI billing support agent. Answers grounded in your documentation — no hallucinations, with source citations on every response.
               </p>
             </div>
 
@@ -295,9 +319,11 @@ export default function ChatInterface() {
                       : "bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-xs shadow-sm"
                   }`}
                 >
-                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                  <div className="whitespace-pre-wrap">
+                    {msg.role === "assistant" ? renderMarkdown(msg.content) : msg.content}
+                  </div>
                   {msg.isStreaming && (
-                    <span className="inline-block w-2 h-4 ml-1 bg-indigo-400 animate-pulse rounded-xs vertical-middle" />
+                    <span className="inline-block w-1.5 h-4 ml-1 bg-indigo-400 animate-pulse rounded-sm align-middle" />
                   )}
                 </div>
 
@@ -433,7 +459,7 @@ function CitationsList({ citations }: { citations: Citation[] }) {
 
               {c.content && (
                 <p className="text-slate-400 text-[11px] leading-relaxed line-clamp-3 bg-slate-900/60 p-2 rounded border border-slate-800/40">
-                  "{c.content}"
+                  &ldquo;{c.content}&rdquo;
                 </p>
               )}
             </div>

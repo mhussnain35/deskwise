@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { EVAL_DATASET, TestCase } from "./eval-dataset";
+import { EVAL_DATASET } from "./eval-dataset";
 import { chunkMarkdown } from "../lib/rag/chunker";
 import { embedText } from "../lib/ai/embeddings";
 

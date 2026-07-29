@@ -46,7 +46,7 @@ export async function GET(
       }
     });
 
-    let chunkMap: Record<string, { id: string; title: string; section: string; content: string }> = {};
+    const chunkMap: Record<string, { id: string; title: string; section: string; content: string }> = {};
 
     if (allCitedChunkIds.length > 0) {
       try {
