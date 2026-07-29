@@ -1,14 +1,15 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Send, Bot, User, Sparkles, RefreshCw, FileText, ChevronDown, ChevronUp, ExternalLink, ShieldCheck } from "lucide-react";
+import { Send, Bot, User, Sparkles, RefreshCw, FileText, ChevronDown, ChevronUp, ShieldCheck, ThumbsUp, ThumbsDown, Settings } from "lucide-react";
+import Link from "next/link";
 
 interface Citation {
   id: string;
   title: string;
   section: string;
   content: string;
-  score: number;
+  score?: number;
 }
 
 interface Message {
@@ -17,6 +18,7 @@ interface Message {
   content: string;
   isStreaming?: boolean;
   citations?: Citation[];
+  feedback?: "up" | "down";
 }
 
 const SAMPLE_PROMPTS = [
@@ -31,6 +33,7 @@ export default function ChatInterface() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>("");
+  const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -41,6 +44,16 @@ export default function ChatInterface() {
       localStorage.setItem("deskwise_session_id", storedSession);
     }
     setSessionId(storedSession);
+
+    // Load past conversation history if available
+    fetch(`/api/history/${storedSession}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.messages && Array.isArray(data.messages) && data.messages.length > 0) {
+          setMessages(data.messages);
+        }
+      })
+      .catch((err) => console.warn("Could not load session history:", err));
   }, []);
 
   useEffect(() => {
@@ -77,7 +90,6 @@ export default function ChatInterface() {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      // Parse citations header if provided
       let parsedCitations: Citation[] = [];
       const citationsHeader = response.headers.get("X-Citations");
       if (citationsHeader) {
@@ -130,6 +142,20 @@ export default function ChatInterface() {
     }
   };
 
+  const handleFeedback = async (messageId: string, rating: "up" | "down") => {
+    setFeedbackState((prev) => ({ ...prev, [messageId]: rating }));
+
+    try {
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageId, rating }),
+      });
+    } catch (err) {
+      console.error("Failed to submit feedback:", err);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -164,10 +190,14 @@ export default function ChatInterface() {
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 bg-slate-800/40 px-3 py-1.5 rounded-lg border border-slate-800">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>Session: <code className="text-slate-300 font-mono">{sessionId.slice(0, 12)}</code></span>
-          </div>
+          <Link
+            href="/admin"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-800 rounded-lg border border-slate-700/60 transition-colors"
+            title="KB Admin Management Panel"
+          >
+            <Settings className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="hidden sm:inline">Admin Panel</span>
+          </Link>
 
           <button
             onClick={handleClearChat}
@@ -229,7 +259,7 @@ export default function ChatInterface() {
                 {msg.role === "user" ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
               </div>
 
-              {/* Message Bubble & Citations */}
+              {/* Message Bubble & Controls */}
               <div className="flex flex-col space-y-2 max-w-[85%] sm:max-w-[78%]">
                 <div
                   className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
@@ -244,9 +274,36 @@ export default function ChatInterface() {
                   )}
                 </div>
 
-                {/* Source Citations Box */}
-                {msg.role === "assistant" && msg.citations && msg.citations.length > 0 && (
-                  <CitationsList citations={msg.citations} />
+                {/* Source Citations & Feedback Bar */}
+                {msg.role === "assistant" && !msg.isStreaming && (
+                  <div className="flex flex-col space-y-2">
+                    {msg.citations && msg.citations.length > 0 && (
+                      <CitationsList citations={msg.citations} />
+                    )}
+
+                    {/* Thumbs Up/Down Feedback Buttons */}
+                    <div className="flex items-center justify-end gap-1.5 text-slate-500 pt-0.5">
+                      <span className="text-[10px]">Was this helpful?</span>
+                      <button
+                        onClick={() => handleFeedback(msg.id, "up")}
+                        className={`p-1 rounded hover:bg-slate-800 hover:text-slate-200 transition-colors ${
+                          feedbackState[msg.id] === "up" ? "text-emerald-400 bg-emerald-500/10" : ""
+                        }`}
+                        title="Helpful"
+                      >
+                        <ThumbsUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleFeedback(msg.id, "down")}
+                        className={`p-1 rounded hover:bg-slate-800 hover:text-slate-200 transition-colors ${
+                          feedbackState[msg.id] === "down" ? "text-rose-400 bg-rose-500/10" : ""
+                        }`}
+                        title="Not helpful"
+                      >
+                        <ThumbsDown className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
@@ -326,9 +383,11 @@ function CitationsList({ citations }: { citations: Citation[] }) {
                   </span>
                   <span className="truncate">{c.title}</span>
                 </div>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0 font-mono">
-                  {(c.score * 100).toFixed(0)}% Match
-                </span>
+                {c.score !== undefined && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0 font-mono">
+                    {(c.score * 100).toFixed(0)}% Match
+                  </span>
+                )}
               </div>
 
               {c.section && (
@@ -337,9 +396,11 @@ function CitationsList({ citations }: { citations: Citation[] }) {
                 </p>
               )}
 
-              <p className="text-slate-400 text-[11px] leading-relaxed line-clamp-3 bg-slate-900/60 p-2 rounded border border-slate-800/40">
-                "{c.content}"
-              </p>
+              {c.content && (
+                <p className="text-slate-400 text-[11px] leading-relaxed line-clamp-3 bg-slate-900/60 p-2 rounded border border-slate-800/40">
+                  "{c.content}"
+                </p>
+              )}
             </div>
           ))}
         </div>
