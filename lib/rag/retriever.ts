@@ -22,7 +22,7 @@ export interface RetrievalResult {
 }
 
 // Confidence score threshold: queries scoring below this skip LLM and return human escalation fallback
-export const CONFIDENCE_THRESHOLD = 0.35;
+export const CONFIDENCE_THRESHOLD = 0.55;
 
 /**
  * Retrieve top-K relevant knowledge base chunks for a given query.
