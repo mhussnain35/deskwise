@@ -1,16 +1,14 @@
 # Deskwise — AI Customer Support RAG Agent
 
-> A production-style retrieval-augmented generation (RAG) support agent for SaaS billing & subscription management. Built to demonstrate deliberate architecture decisions and measured retrieval quality — not just a tutorial clone.
+## Most support bots confidently invent answers. This one doesn't.
 
-**Stack:** Next.js 16 (App Router) · Gemini 2.0 Flash · Qdrant Cloud · Neon Postgres · Drizzle ORM · TypeScript
+Deskwise answers customer billing questions using your company's actual documentation. Every response shows exactly which policy sections it drew from, with match scores. When the question falls outside what the docs cover, it doesn't improvise — it hands off to a human with contact details.
 
----
-
-## What This Is
-
-Deskwise is an AI customer support agent that answers billing and subscription questions using a company's own documentation — not by hallucinating generic answers. It retrieves relevant knowledge base chunks via vector search, grounds the LLM response in retrieved context, and cites its sources inline.
+That behavior isn't a claim. It's measured: 25 benchmark cases, 15 in-scope and 10 deliberately out-of-scope, scoring **100% on in-scope recall** and **90% on correctly refusing what it shouldn't answer**.
 
 **Vertical:** SaaS billing & subscription support — pricing tiers, refund policy, cancellation flow, payment failure handling, proration rules, invoice/tax management.
+
+**Stack:** Next.js 16 (App Router) · Gemini 2.0 Flash · Qdrant Cloud · Neon Postgres · Drizzle ORM · TypeScript
 
 ---
 
