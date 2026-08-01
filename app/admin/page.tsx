@@ -27,16 +27,43 @@ export default function AdminPage() {
   const [newContent, setNewContent] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
 
+  /**
+   * Admin writes are gated by ADMIN_TOKEN on the server. The token is held in
+   * sessionStorage and sent per request — it is never persisted to disk or
+   * embedded in the bundle.
+   */
+  const adminToken = () => {
+    let token = sessionStorage.getItem("deskwise_admin_token");
+    if (!token) {
+      token = window.prompt("Admin token (leave blank if running locally without ADMIN_TOKEN):") || "";
+      sessionStorage.setItem("deskwise_admin_token", token);
+    }
+    return token;
+  };
+
+  const adminHeaders = (): Record<string, string> => ({
+    "Content-Type": "application/json",
+    "x-admin-token": adminToken(),
+  });
+
+  const clearAdminToken = () => sessionStorage.removeItem("deskwise_admin_token");
+
+  const loadDocs = async () => {
+    const res = await fetch("/api/admin/docs");
+    return res.json();
+  };
+
+  const applyDocs = (data: { docs?: KBDoc[]; totalDocs?: number; totalChunks?: number }) => {
+    if (!data?.docs) return;
+    setDocs(data.docs);
+    setTotalDocs(data.totalDocs || 0);
+    setTotalChunks(data.totalChunks || 0);
+  };
+
   const fetchDocs = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch("/api/admin/docs");
-      const data = await res.json();
-      if (data.docs) {
-        setDocs(data.docs);
-        setTotalDocs(data.totalDocs || 0);
-        setTotalChunks(data.totalChunks || 0);
-      }
+      applyDocs(await loadDocs());
     } catch (err) {
       console.error("Failed to load admin docs:", err);
     } finally {
@@ -45,15 +72,34 @@ export default function AdminPage() {
   };
 
   useEffect(() => {
-    fetchDocs();
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const data = await loadDocs();
+        if (!cancelled) applyDocs(data);
+      } catch (err) {
+        console.error("Failed to load admin docs:", err);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleReindex = async () => {
     setIsReindexing(true);
     setStatusMsg("");
     try {
-      const res = await fetch("/api/admin/reindex", { method: "POST" });
+      const res = await fetch("/api/admin/reindex", {
+        method: "POST",
+        headers: adminHeaders(),
+      });
       const data = await res.json();
+      if (res.status === 401) clearAdminToken();
       if (res.ok) {
         setStatusMsg(data.message || "Knowledge base re-indexed successfully!");
         fetchDocs();
@@ -78,7 +124,7 @@ export default function AdminPage() {
     try {
       const res = await fetch("/api/admin/docs", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: adminHeaders(),
         body: JSON.stringify({
           title: newTitle,
           content: newContent,
@@ -86,6 +132,7 @@ export default function AdminPage() {
       });
 
       const data = await res.json();
+      if (res.status === 401) clearAdminToken();
       if (res.ok) {
         setStatusMsg(data.message || "Document uploaded & indexed successfully!");
         setNewTitle("");

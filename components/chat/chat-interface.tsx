@@ -57,25 +57,39 @@ export default function ChatInterface() {
   const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const localIdCounter = useRef(0);
+
+  /** Client-side key for a message until the server hands back its database id. */
+  const nextLocalId = () => `local_${localIdCounter.current++}`;
 
   useEffect(() => {
-    let storedSession = localStorage.getItem("deskwise_session_id");
-    if (!storedSession) {
-      storedSession = "session_" + Math.random().toString(36).substring(2, 9);
-      localStorage.setItem("deskwise_session_id", storedSession);
-    }
-    setSessionId(storedSession);
+    let cancelled = false;
 
-    // Load past conversation history (covers Neon cold-start latency)
-    fetch(`/api/history/${storedSession}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.messages && Array.isArray(data.messages) && data.messages.length > 0) {
-          setMessages(data.messages);
-        }
-      })
-      .catch((err) => console.warn("Could not load session history:", err))
-      .finally(() => setIsInitializing(false));
+    (async () => {
+      let storedSession = localStorage.getItem("deskwise_session_id");
+      if (!storedSession) {
+        storedSession = "session_" + Math.random().toString(36).substring(2, 9);
+        localStorage.setItem("deskwise_session_id", storedSession);
+      }
+
+      // Load past conversation history (covers Neon cold-start latency)
+      let history: Message[] = [];
+      try {
+        const data = await fetch(`/api/history/${storedSession}`).then((res) => res.json());
+        if (Array.isArray(data?.messages)) history = data.messages;
+      } catch (err) {
+        console.warn("Could not load session history:", err);
+      }
+
+      if (cancelled) return;
+      setSessionId(storedSession);
+      setMessages(history);
+      setIsInitializing(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -86,10 +100,9 @@ export default function ChatInterface() {
     const query = (textToSend || input).trim();
     if (!query || isLoading) return;
 
-    const userMessageId = "msg_" + Date.now();
-    const userMsg: Message = { id: userMessageId, role: "user", content: query };
+    const userMsg: Message = { id: nextLocalId(), role: "user", content: query };
 
-    const assistantMessageId = "msg_" + (Date.now() + 1);
+    const assistantMessageId = nextLocalId();
     const assistantMsg: Message = {
       id: assistantMessageId,
       role: "assistant",
@@ -109,18 +122,32 @@ export default function ChatInterface() {
         body: JSON.stringify({ message: query, sessionId }),
       });
 
-      // Handle rate limit gracefully (429)
+      // Handle rate limit gracefully (429) — both our own per-session limiter
+      // and an upstream Gemini quota rejection arrive here.
       if (response.status === 429) {
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         const retrySec = Math.ceil((data.retryAfterMs || 60000) / 1000);
-        setRateLimitMsg(`You're sending messages too quickly. Please wait ${retrySec}s and try again.`);
+        setRateLimitMsg(
+          data.error || `You're sending messages too quickly. Please wait ${retrySec}s and try again.`
+        );
         setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
         return;
       }
 
       if (!response.ok || !response.body) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "The service is temporarily unavailable. Please try again.");
       }
+
+      // Swap the local placeholder id for the database id so feedback lands on
+      // the right row — feedback.message_id is a uuid foreign key.
+      const serverMessageId = response.headers.get("X-Message-Id");
+      if (serverMessageId) {
+        setMessages((prev) =>
+          prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, id: serverMessageId } : msg))
+        );
+      }
+      const trackingId = serverMessageId || assistantMessageId;
 
       let parsedCitations: Citation[] = [];
       const citationsHeader = response.headers.get("X-Citations");
@@ -142,28 +169,27 @@ export default function ChatInterface() {
         const textChunk = decoder.decode(value, { stream: true });
         setMessages((prev) =>
           prev.map((msg) =>
-            msg.id === assistantMessageId
-              ? { ...msg, content: msg.content + textChunk }
-              : msg
+            msg.id === trackingId ? { ...msg, content: msg.content + textChunk } : msg
           )
         );
       }
 
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.id === assistantMessageId
+          msg.id === trackingId
             ? { ...msg, isStreaming: false, citations: parsedCitations }
             : msg
         )
       );
-    } catch (err: any) {
+    } catch (err) {
       console.error("Chat request failed:", err);
+      const detail = err instanceof Error ? err.message : "Please try again.";
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantMessageId
             ? {
                 ...msg,
-                content: "Sorry, an error occurred while streaming the response. Please try again.",
+                content: detail,
                 isStreaming: false,
               }
             : msg
@@ -178,11 +204,21 @@ export default function ChatInterface() {
     setFeedbackState((prev) => ({ ...prev, [messageId]: rating }));
 
     try {
-      await fetch("/api/feedback", {
+      const res = await fetch("/api/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messageId, rating }),
       });
+
+      if (!res.ok) {
+        // Roll the button back rather than show a rating that was never stored.
+        setFeedbackState((prev) => {
+          const next = { ...prev };
+          delete next[messageId];
+          return next;
+        });
+        console.error("Feedback rejected:", (await res.json().catch(() => ({}))).error);
+      }
     } catch (err) {
       console.error("Failed to submit feedback:", err);
     }

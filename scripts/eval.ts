@@ -1,3 +1,4 @@
+import "./load-env";
 import fs from "fs";
 import path from "path";
 import { EVAL_DATASET } from "./eval-dataset";

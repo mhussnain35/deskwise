@@ -40,11 +40,15 @@ export function checkRateLimit(sessionId: string): {
   return { allowed: true, remaining: MAX_REQUESTS - entry.timestamps.length, resetMs: 0 };
 }
 
-// Prune stale sessions every 5 minutes to avoid unbounded memory growth
-setInterval(() => {
+// Prune stale sessions every 5 minutes to avoid unbounded memory growth.
+// unref() so this timer never holds the process open — otherwise `next build`
+// and serverless invocations wait on it before exiting.
+const pruneTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of store.entries()) {
     entry.timestamps = entry.timestamps.filter((ts) => now - ts < WINDOW_MS);
     if (entry.timestamps.length === 0) store.delete(key);
   }
 }, 5 * 60_000);
+
+pruneTimer.unref?.();

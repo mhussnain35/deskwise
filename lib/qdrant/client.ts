@@ -40,9 +40,36 @@ export async function ensureCollectionExists(): Promise<boolean> {
       console.log(`[Qdrant] Collection "${COLLECTION_NAME}" verified.`);
     }
 
+    await ensurePayloadIndexes();
     return true;
   } catch (err) {
     console.error("[Qdrant] Error initializing collection:", err);
     return false;
+  }
+}
+
+/**
+ * Payload indexes required by the re-index cleanup filter, which removes points
+ * belonging to a document that no longer has that many chunks. Qdrant rejects
+ * filtered deletes on unindexed keys. Creating an existing index is a no-op.
+ */
+async function ensurePayloadIndexes(): Promise<void> {
+  if (!qdrant) return;
+
+  const indexes: { field: string; schema: "keyword" | "integer" }[] = [
+    { field: "filename", schema: "keyword" },
+    { field: "chunk_index", schema: "integer" },
+  ];
+
+  for (const { field, schema } of indexes) {
+    try {
+      await qdrant.createPayloadIndex(COLLECTION_NAME, {
+        field_name: field,
+        field_schema: schema,
+        wait: true,
+      });
+    } catch (err) {
+      console.warn(`[Qdrant] Could not ensure payload index on "${field}":`, err);
+    }
   }
 }

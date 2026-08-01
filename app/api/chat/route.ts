@@ -1,10 +1,62 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 import { ai, MODEL_NAME } from "@/lib/ai/gemini";
 import { db } from "@/lib/db";
 import { conversations, messages } from "@/lib/db/schema";
-import { retrieveContext } from "@/lib/rag/retriever";
+import { retrieveContext, type RetrievedChunk } from "@/lib/rag/retriever";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { UpstreamError, toUpstreamError, logUpstream } from "@/lib/errors";
 import { eq } from "drizzle-orm";
+
+// Citations ride on a response header, so they must stay well inside the ~4 KB
+// per-header ceiling enforced by Vercel/AWS. Full chunk bodies used to be sent
+// verbatim, which measured 4.3 KB worst-case against the current KB and grew
+// unbounded with every admin upload. The UI only ever renders three clamped
+// lines, so a snippet is all it needs.
+const CITATION_SNIPPET_CHARS = 240;
+const MAX_CITATIONS_HEADER_BYTES = 3000;
+
+function buildCitationsHeader(chunks: RetrievedChunk[]): string {
+  const citations = chunks.map((c) => ({
+    id: c.id,
+    title: c.title,
+    section: c.section,
+    content:
+      c.content.length > CITATION_SNIPPET_CHARS
+        ? c.content.slice(0, CITATION_SNIPPET_CHARS).trimEnd() + "…"
+        : c.content,
+    score: c.score,
+  }));
+
+  // Drop trailing citations rather than emit a header the platform will reject.
+  while (citations.length > 1) {
+    const encoded = encodeURIComponent(JSON.stringify(citations));
+    if (encoded.length <= MAX_CITATIONS_HEADER_BYTES) return encoded;
+    citations.pop();
+  }
+
+  return encodeURIComponent(JSON.stringify(citations));
+}
+
+async function saveAssistantMessage(
+  conversationId: string,
+  messageId: string,
+  content: string,
+  citedChunkIds?: string[]
+): Promise<void> {
+  if (!db) return;
+  try {
+    await db.insert(messages).values({
+      id: messageId,
+      conversationId,
+      role: "assistant",
+      content,
+      citedChunkIds,
+    });
+  } catch (saveErr) {
+    console.error("[Chat API] Error saving assistant response:", saveErr);
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -64,6 +116,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // The assistant message id is minted up front so it can be returned in a
+    // header before the body streams. The client needs a real database id to
+    // submit feedback against — it used to invent `msg_<timestamp>`, which the
+    // uuid-typed feedback.message_id column rejected on every single insert.
+    const assistantMessageId = crypto.randomUUID();
+
     // 2. Perform RAG Retrieval against Knowledge Base
     const retrieval = await retrieveContext(message, 5);
     const encoder = new TextEncoder();
@@ -77,22 +135,15 @@ export async function POST(req: NextRequest) {
         "• Visit **Account Settings > Help Center** in your admin dashboard.\n";
 
       // Log assistant fallback turn to DB
-      if (db && conversationId) {
-        try {
-          await db.insert(messages).values({
-            conversationId: conversationId,
-            role: "assistant",
-            content: fallbackMessage,
-          });
-        } catch (saveErr) {
-          console.error("[Chat API] Error saving fallback response:", saveErr);
-        }
+      if (conversationId) {
+        await saveAssistantMessage(conversationId, assistantMessageId, fallbackMessage);
       }
 
       return new Response(fallbackMessage, {
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
           "X-Confidence-Passed": "false",
+          "X-Message-Id": assistantMessageId,
         },
       });
     }
@@ -116,15 +167,14 @@ export async function POST(req: NextRequest) {
       "4. Do NOT hallucinate information not present in the context.";
 
     // Format citations header for UI display
-    const citationData = JSON.stringify(
-      retrieval.chunks.map((c) => ({
-        id: c.id,
-        title: c.title,
-        section: c.section,
-        content: c.content,
-        score: c.score,
-      }))
-    );
+    const citationData = buildCitationsHeader(retrieval.chunks);
+
+    const streamHeaders = {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache",
+      "X-Citations": citationData,
+      "X-Message-Id": assistantMessageId,
+    };
 
     // 5. Call Gemini Stream
     if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === "dummy-key-for-dev") {
@@ -143,21 +193,28 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      return new Response(mockStream, {
-        headers: {
-          "Content-Type": "text/plain; charset=utf-8",
-          "X-Citations": encodeURIComponent(citationData),
-        },
-      });
+      if (conversationId) {
+        await saveAssistantMessage(conversationId, assistantMessageId, mockResponse);
+      }
+
+      return new Response(mockStream, { headers: streamHeaders });
     }
 
-    const responseStream = await ai.models.generateContentStream({
-      model: MODEL_NAME,
-      contents: fullUserPrompt,
-      config: {
-        systemInstruction,
-      },
-    });
+    // Opening the stream is where quota/auth failures surface. Awaiting it here
+    // — before any bytes are committed — means an upstream 429 can still be
+    // answered with a proper 429 instead of a half-written 200.
+    let responseStream;
+    try {
+      responseStream = await ai.models.generateContentStream({
+        model: MODEL_NAME,
+        contents: fullUserPrompt,
+        config: {
+          systemInstruction,
+        },
+      });
+    } catch (err) {
+      throw toUpstreamError(err, "answer generation");
+    }
 
     let fullAssistantResponse = "";
 
@@ -169,42 +226,47 @@ export async function POST(req: NextRequest) {
             fullAssistantResponse += chunkText;
             controller.enqueue(encoder.encode(chunkText));
           }
-          controller.close();
+        } catch (streamErr) {
+          // Headers are already flushed, so the only channel left is the body.
+          // Emit the sanitised message — never the raw provider payload.
+          const upstream = toUpstreamError(streamErr, "answer generation");
+          logUpstream("Chat API] Gemini streaming error", upstream);
+          controller.enqueue(encoder.encode(`\n\n_${upstream.publicMessage}_`));
+          fullAssistantResponse += `\n\n_${upstream.publicMessage}_`;
+        }
 
-          // Save Assistant Message with Cited Chunk IDs to DB
-          if (db && conversationId) {
-            try {
-              await db.insert(messages).values({
-                conversationId: conversationId,
-                role: "assistant",
-                content: fullAssistantResponse,
-                citedChunkIds: retrieval.chunks.map((c) => c.id),
-              });
-            } catch (saveErr) {
-              console.error("[Chat API] Error saving assistant response:", saveErr);
-            }
-          }
-        } catch (streamErr: any) {
-          console.error("[Chat API] Gemini streaming error:", streamErr);
-          controller.enqueue(
-            encoder.encode(`\n[Error streaming response: ${streamErr?.message || "Gemini API error"}]`)
+        controller.close();
+
+        // Save Assistant Message with Cited Chunk IDs to DB
+        if (conversationId) {
+          await saveAssistantMessage(
+            conversationId,
+            assistantMessageId,
+            fullAssistantResponse,
+            retrieval.chunks.map((c) => c.id)
           );
-          controller.close();
         }
       },
     });
 
-    return new Response(customReadable, {
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-cache",
-        "X-Citations": encodeURIComponent(citationData),
-      },
-    });
-  } catch (error: any) {
+    return new Response(customReadable, { headers: streamHeaders });
+  } catch (error) {
+    if (error instanceof UpstreamError) {
+      logUpstream("Chat API", error);
+      return NextResponse.json(
+        { error: error.publicMessage, retryAfterMs: (error.retryAfterSeconds ?? 0) * 1000 },
+        {
+          status: error.status,
+          headers: error.retryAfterSeconds
+            ? { "Retry-After": String(error.retryAfterSeconds) }
+            : undefined,
+        }
+      );
+    }
+
     console.error("[Chat API] Unexpected error:", error);
     return NextResponse.json(
-      { error: error?.message || "Internal server error" },
+      { error: "Something went wrong handling your message. Please try again." },
       { status: 500 }
     );
   }

@@ -24,6 +24,8 @@ export interface RetrievalResult {
 // Confidence score threshold: queries scoring below this skip LLM and return human escalation fallback
 export const CONFIDENCE_THRESHOLD = 0.55;
 
+const KB_DOCS_DIR = path.join(process.cwd(), "kb-docs");
+
 /**
  * Retrieve top-K relevant knowledge base chunks for a given query.
  * Supports Qdrant Cloud vector search with a local cosine similarity fallback.
@@ -61,7 +63,7 @@ export async function retrieveContext(
 
   // 2. Local Cosine Similarity Search Fallback (if Qdrant returns empty or unconfigured)
   if (retrievedChunks.length === 0) {
-    retrievedChunks = await localCosineSearch(query, queryVector, topK);
+    retrievedChunks = await localCosineSearch(queryVector, topK);
   }
 
   const topScore = retrievedChunks.length > 0 ? retrievedChunks[0].score : 0;
@@ -75,44 +77,102 @@ export async function retrieveContext(
   };
 }
 
-/**
- * In-memory local vector cosine search over /kb-docs chunks
- */
-async function localCosineSearch(
-  query: string,
-  queryVector: number[],
-  topK: number
-): Promise<RetrievedChunk[]> {
-  const kbDir = path.join(process.cwd(), "kb-docs");
-  if (!fs.existsSync(kbDir)) return [];
+// ---------------------------------------------------------------------------
+// Local index cache
+//
+// The local fallback used to re-read every kb-doc and re-embed all 47 chunks on
+// every single request — ~47 embedding round-trips per question, which both
+// blew the 30s function budget and burned through the Gemini free-tier quota.
+// The index is now built once per process and reused, keyed by a cheap
+// signature of the kb-docs directory so uploads and re-indexes invalidate it.
+// ---------------------------------------------------------------------------
 
-  const files = fs.readdirSync(kbDir).filter((f) => f.endsWith(".md"));
-  const allScoredChunks: RetrievedChunk[] = [];
+interface IndexedChunk extends Omit<RetrievedChunk, "score"> {
+  vector: number[];
+}
+
+let cachedIndex: IndexedChunk[] | null = null;
+let cachedSignature = "";
+let indexBuild: Promise<IndexedChunk[]> | null = null;
+
+function kbSignature(): string {
+  if (!fs.existsSync(KB_DOCS_DIR)) return "empty";
+  return fs
+    .readdirSync(KB_DOCS_DIR)
+    .filter((f) => f.endsWith(".md"))
+    .sort()
+    .map((f) => `${f}:${fs.statSync(path.join(KB_DOCS_DIR, f)).mtimeMs}`)
+    .join("|");
+}
+
+/** Drop the cached local index — called after an upload or re-index. */
+export function invalidateLocalIndex(): void {
+  cachedIndex = null;
+  cachedSignature = "";
+  indexBuild = null;
+}
+
+async function buildLocalIndex(): Promise<IndexedChunk[]> {
+  const files = fs.readdirSync(KB_DOCS_DIR).filter((f) => f.endsWith(".md"));
+  const index: IndexedChunk[] = [];
 
   for (const filename of files) {
-    const filePath = path.join(kbDir, filename);
-    const content = fs.readFileSync(filePath, "utf-8");
+    const content = fs.readFileSync(path.join(KB_DOCS_DIR, filename), "utf-8");
     const chunks = chunkMarkdown(filename, content);
 
     for (let idx = 0; idx < chunks.length; idx++) {
       const chunk = chunks[idx];
-      const chunkVector = await embedText(chunk.content);
-      const score = cosineSimilarity(queryVector, chunkVector);
-
-      allScoredChunks.push({
+      index.push({
         id: `local_chunk_${filename}_${idx}`,
         docId: filename,
         title: chunk.title,
         section: chunk.section,
         content: chunk.content,
         sourceUrl: `/kb-docs/${filename}`,
-        score: score,
+        vector: await embedText(chunk.content),
       });
     }
   }
 
-  allScoredChunks.sort((a, b) => b.score - a.score);
-  return allScoredChunks.slice(0, topK);
+  return index;
+}
+
+async function getLocalIndex(): Promise<IndexedChunk[]> {
+  const signature = kbSignature();
+
+  if (cachedIndex && cachedSignature === signature) return cachedIndex;
+
+  // Collapse concurrent cold-start requests onto a single build.
+  if (!indexBuild || cachedSignature !== signature) {
+    cachedSignature = signature;
+    indexBuild = buildLocalIndex()
+      .then((index) => {
+        cachedIndex = index;
+        return index;
+      })
+      .catch((err) => {
+        indexBuild = null;
+        cachedSignature = "";
+        throw err;
+      });
+  }
+
+  return indexBuild;
+}
+
+/** In-memory local vector cosine search over /kb-docs chunks */
+async function localCosineSearch(
+  queryVector: number[],
+  topK: number
+): Promise<RetrievedChunk[]> {
+  if (!fs.existsSync(KB_DOCS_DIR)) return [];
+
+  const index = await getLocalIndex();
+
+  return index
+    .map(({ vector, ...chunk }) => ({ ...chunk, score: cosineSimilarity(queryVector, vector) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
 }
 
 function cosineSimilarity(vecA: number[], vecB: number[]): number {

@@ -93,11 +93,11 @@ export async function GET(
         conversationId,
         messages: formattedMessages,
       });
-    } catch (dbQueryErr: any) {
-      console.warn("[History API] DB query fallback:", dbQueryErr?.message || dbQueryErr);
+    } catch (dbQueryErr) {
+      console.warn("[History API] DB query fallback:", dbQueryErr);
       return NextResponse.json({ sessionId, messages: [] });
     }
-  } catch (error: any) {
+  } catch (error) {
     console.error("[History API] Unexpected error:", error);
     return NextResponse.json({ sessionId, messages: [] });
   }

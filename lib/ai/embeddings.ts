@@ -1,33 +1,62 @@
 import { ai } from "./gemini";
+import { UpstreamError, toUpstreamError } from "../errors";
 
-export const EMBEDDING_MODEL = "text-embedding-004";
+// text-embedding-004 was retired and now 404s on this API version. Every embed
+// call had been failing and silently falling back to mock vectors, so the whole
+// pipeline was running on keyword clusters rather than real semantics.
+// gemini-embedding-001 defaults to 3072 dims; 768 is requested explicitly to
+// stay compatible with the existing Qdrant collection.
+export const EMBEDDING_MODEL = "gemini-embedding-001";
 export const VECTOR_DIMENSION = 768;
+
+interface EmbedResponse {
+  embedding?: { values?: number[] };
+  embeddings?: { values?: number[] }[];
+}
+
+/** True when no real key is configured — the whole app runs on mock vectors. */
+export function isMockEmbeddingMode(): boolean {
+  const key = process.env.GEMINI_API_KEY;
+  return !key || key === "dummy-key-for-dev";
+}
 
 /**
  * Generate a 768-d vector embedding via Gemini text-embedding-004.
- * Falls back to generateMockEmbedding() when no API key is configured.
+ *
+ * Mock vectors are used only when no API key is configured at all, so that the
+ * whole index and every query share one vector space. If a key IS configured
+ * and the call fails, we throw rather than silently returning a mock vector —
+ * mixing mock and Gemini vectors drives cosine similarity to ~0, which would
+ * push every query below CONFIDENCE_THRESHOLD and make the agent escalate on
+ * everything with no error surfaced anywhere.
  */
 export async function embedText(text: string): Promise<number[]> {
-  if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === "dummy-key-for-dev") {
+  if (isMockEmbeddingMode()) {
     return generateMockEmbedding(text);
   }
 
   try {
-    const response: any = await ai.models.embedContent({
+    const response = (await ai.models.embedContent({
       model: EMBEDDING_MODEL,
       contents: text,
-    });
+      config: { outputDimensionality: VECTOR_DIMENSION },
+    })) as EmbedResponse;
 
     const values = response.embedding?.values || response.embeddings?.[0]?.values;
     if (!values || values.length === 0) {
-      throw new Error("Empty embedding returned from Gemini API");
+      throw new UpstreamError("Gemini returned an empty embedding.", 502);
     }
 
-    return values;
+    // Only the full 3072-d output is pre-normalised; truncated dimensions are not.
+    return normalize(values);
   } catch (err) {
-    console.warn("[Embeddings] API call failed, using fallback:", err);
-    return generateMockEmbedding(text);
+    throw toUpstreamError(err, "embedding");
   }
+}
+
+function normalize(vec: number[]): number[] {
+  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
+  return vec.map((v) => v / norm);
 }
 
 // ---------------------------------------------------------------------------

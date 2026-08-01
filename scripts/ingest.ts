@@ -1,3 +1,4 @@
+import "./load-env";
 import { runFullIngestion } from "../lib/rag/ingestor";
 
 async function main() {

@@ -1,3 +1,4 @@
+import "./load-env";
 import { retrieveContext, CONFIDENCE_THRESHOLD } from "../lib/rag/retriever";
 
 async function main() {

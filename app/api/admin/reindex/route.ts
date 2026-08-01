@@ -1,18 +1,31 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { runFullIngestion } from "@/lib/rag/ingestor";
+import { invalidateLocalIndex } from "@/lib/rag/retriever";
+import { requireAdmin } from "@/lib/admin-auth";
+import { UpstreamError, logUpstream } from "@/lib/errors";
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req);
+  if (denied) return denied;
+
   try {
     const report = await runFullIngestion();
+    invalidateLocalIndex();
+
     return NextResponse.json({
       success: true,
       message: `Re-indexed ${report.totalDocs} documents (${report.totalChunks} total section chunks).`,
       report,
     });
-  } catch (error: any) {
+  } catch (error) {
+    if (error instanceof UpstreamError) {
+      logUpstream("Admin Reindex API", error);
+      return NextResponse.json({ error: error.publicMessage }, { status: error.status });
+    }
+
     console.error("[Admin Reindex API] Error:", error);
     return NextResponse.json(
-      { error: error?.message || "Failed to re-index knowledge base" },
+      { error: "Failed to re-index knowledge base." },
       { status: 500 }
     );
   }

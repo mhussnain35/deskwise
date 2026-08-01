@@ -20,7 +20,7 @@ Deskwise is an AI customer support agent that answers billing and subscription q
 User Question
   └─► POST /api/chat
         ├─► Rate Limiter           (10 req/min per session — prevents Gemini 429s)
-        ├─► Embed Query            (Gemini text-embedding-004, 768d)
+        ├─► Embed Query            (Gemini gemini-embedding-001, 768d)
         ├─► Vector Search          (Qdrant Cloud dense search / local cosine fallback)
         ├─► Confidence Guardrail   (score < 0.55 → skip LLM, return human escalation)
         ├─► Prompt Construction    (top-5 chunks injected as context)
@@ -42,7 +42,7 @@ User Question
 | **Vector Search** | Qdrant Cloud dense search with local cosine similarity fallback for dev/offline |
 | **Feedback Loop** | Thumbs up/down per answer persisted to Neon Postgres |
 | **Session History** | Conversations survive page reload via Neon-backed session storage |
-| **Admin Panel** | Upload KB docs, view chunk metrics, trigger re-indexing at `/admin` |
+| **Admin Panel** | Upload KB docs, view chunk metrics, trigger re-indexing at `/admin` — writes gated by `ADMIN_TOKEN` |
 | **Rate Limiting** | Sliding-window per-session limiter (10 req/60s) with friendly UI error |
 | **Cold-Start Overlay** | Branded loading screen during Neon autosuspend wake-up |
 | **Evaluation Harness** | 25-case benchmark measuring confidence accuracy and fallback precision |
@@ -98,7 +98,7 @@ If retrieval confidence is below 0.55, the API route skips the LLM call entirely
 | Frontend/Backend | Next.js 16 (App Router, TypeScript) | Full-stack in one framework, zero config deploy to Vercel |
 | Vector DB | Qdrant Cloud (free cluster) | Native hybrid search, dedicated scaling, named vector-DB skill |
 | Relational DB | Neon (serverless Postgres) | Conversations, feedback, doc metadata; serverless cold-start solved by loading overlay |
-| Embeddings | Gemini `text-embedding-004` (768d) | Free tier, same API key as LLM, no separate OpenAI dependency |
+| Embeddings | Gemini `gemini-embedding-001` @ 768d | Same API key as the LLM, no separate OpenAI dependency. 768 of the model's 3072 dimensions are requested so the existing Qdrant collection stays valid. |
 | LLM | Gemini 2.0 Flash | Streaming generation, free tier RPM |
 | ORM | Drizzle ORM | Type-safe Postgres queries, lightweight |
 | Styling | Tailwind CSS v4 | Dark-mode UI, responsive layout |
@@ -125,7 +125,7 @@ deskwise/
 ├── lib/
 │   ├── ai/
 │   │   ├── gemini.ts                # Gemini SDK client
-│   │   └── embeddings.ts            # text-embedding-004 wrapper + mock fallback
+│   │   └── embeddings.ts            # gemini-embedding-001 wrapper (768d) + dev-only mock
 │   ├── db/
 │   │   ├── schema.ts                # Drizzle ORM schema (5 tables)
 │   │   └── index.ts                 # Neon connection pool
@@ -134,12 +134,16 @@ deskwise/
 │   │   ├── chunker.ts               # Semantic heading-based Markdown chunker
 │   │   ├── retriever.ts             # Vector search + confidence scoring
 │   │   └── ingestor.ts              # Shared chunk → embed → upsert pipeline
-│   └── rate-limit.ts                # Sliding-window in-memory rate limiter
+│   ├── rate-limit.ts                # Sliding-window in-memory rate limiter
+│   ├── admin-auth.ts                # ADMIN_TOKEN gate for the admin write routes
+│   └── errors.ts                    # Upstream error normalisation (no provider leaks)
 ├── kb-docs/                         # 8 SaaS billing support Markdown documents
 ├── scripts/
 │   ├── ingest.ts                    # CLI ingestion runner
 │   ├── eval-dataset.ts              # 25 benchmark Q&A test cases
-│   └── eval.ts                      # Evaluation harness — outputs eval-results.md
+│   ├── eval.ts                      # Evaluation harness — outputs eval-results.md
+│   ├── search-test.ts               # CLI retrieval probe
+│   └── load-env.ts                  # Loads .env.local for standalone scripts
 └── drizzle/                         # Generated SQL migrations
 ```
 
@@ -173,6 +177,7 @@ GEMINI_API_KEY=your_gemini_api_key
 DATABASE_URL=your_neon_connection_string
 QDRANT_URL=https://your-cluster.qdrant.io   # optional
 QDRANT_API_KEY=your_qdrant_api_key          # optional
+ADMIN_TOKEN=a_long_random_string             # gates the /admin write endpoints
 ```
 
 ```bash
@@ -206,6 +211,7 @@ Set these environment variables in Vercel Project Settings → Environment Varia
 - `DATABASE_URL`
 - `QDRANT_URL` (optional)
 - `QDRANT_API_KEY` (optional)
+- `ADMIN_TOKEN` — **required in production**, otherwise the admin write endpoints stay disabled
 
 ---
 
@@ -219,7 +225,8 @@ These are stated explicitly and by design — this is a portfolio/demo project, 
 | **Neon cold start** | First query after ~5 min idle may take 300–500 ms. Handled by the branded loading overlay so it doesn't look like a bug. |
 | **Rate limiting** | In-memory per-session throttle (10 req/min). Resets on server cold-start. Sufficient for demo traffic. |
 | **Eval set is synthetic** | 25 hand-authored Q&A pairs, not production-scale query logs. Still more rigor than 95% of portfolio RAGs. |
-| **Mock embeddings in dev** | Without `GEMINI_API_KEY`, a keyword-cluster mock embedding is used for local development. Retrieval precision is representative but not identical to live Gemini vectors. |
+| **Mock embeddings in dev** | Used only when `GEMINI_API_KEY` is entirely unset. When a key is present, embedding failures raise rather than fall back — mixing mock and Gemini vectors collapses cosine similarity and would silently disable the guardrail. |
+| **Admin uploads are local-only** | Serverless filesystems are read-only, so uploading through `/admin` on Vercel returns a clear 503. Commit new docs to `kb-docs/` and redeploy, or run the panel locally. |
 
 ---
 
