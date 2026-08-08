@@ -19,6 +19,8 @@ import {
 import { CitationsList } from "./citations";
 import { DocumentPanel, UPLOAD_ACCEPT } from "./document-panel";
 import { ChatLoadingScreen } from "./loading-screen";
+import { SPLASH_DURATION_MS, SplashScreen } from "./splash-screen";
+import { DeskwiseMark } from "@/components/brand/deskwise-logo";
 import { Markdown } from "./markdown";
 import { useDocuments } from "./use-documents";
 import { useVisualViewport } from "./use-visual-viewport";
@@ -59,6 +61,7 @@ export default function ChatInterface() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true); // cold-start / history load
+  const [splashDone, setSplashDone] = useState(false);
   const [rateLimitMsg, setRateLimitMsg] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
   const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
@@ -107,6 +110,13 @@ export default function ChatInterface() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // The splash runs on its own clock alongside the history fetch, rather than
+  // after it — so on a warm load the two overlap and the wait costs nothing.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSplashDone(true), SPLASH_DURATION_MS);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -322,7 +332,12 @@ export default function ChatInterface() {
     );
   };
 
-  // Cold-start: skeleton of this same layout while history loads.
+  // Start-up sequence: branded splash first, then the layout skeleton for as
+  // long as the conversation is still loading.
+  if (!splashDone) {
+    return <SplashScreen />;
+  }
+
   if (isInitializing) {
     return <ChatLoadingScreen />;
   }
@@ -339,9 +354,7 @@ export default function ChatInterface() {
       {/* Header */}
       <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-900/70 px-3 py-2.5 backdrop-blur-md sm:px-6 sm:py-4">
         <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 shadow-lg shadow-indigo-500/20 sm:h-10 sm:w-10">
-            <Bot className="h-5 w-5 text-white" />
-          </div>
+          <DeskwiseMark className="h-9 w-9 shrink-0 shadow-lg shadow-indigo-500/20 sm:h-10 sm:w-10" />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="truncate text-base font-semibold tracking-tight text-white sm:text-lg">
@@ -534,9 +547,7 @@ function EmptyState({
   return (
     <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center space-y-6 py-8 text-center">
       <div className="relative">
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 shadow-xl shadow-indigo-500/20">
-          <Bot className="h-8 w-8 text-white" />
-        </div>
+        <DeskwiseMark className="h-16 w-16 shadow-xl shadow-indigo-500/20" />
         <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-slate-950 bg-emerald-500">
           <Zap className="h-2.5 w-2.5 text-white" />
         </span>

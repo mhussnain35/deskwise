@@ -63,6 +63,67 @@ body {
   outline-offset: 2px;
 }
 
+/* --- Splash screen ------------------------------------------------------- */
+
+@keyframes deskwise-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes deskwise-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Fills left-to-right over the splash duration, set by --splash-duration. */
+@keyframes deskwise-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes deskwise-glow {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.08);
+  }
+}
+
+.splash-rise {
+  animation: deskwise-rise 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.splash-fade {
+  animation: deskwise-fade 700ms ease-out both;
+}
+
+.splash-progress {
+  transform-origin: left center;
+  animation: deskwise-progress var(--splash-duration, 2500ms) cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.splash-glow {
+  animation: deskwise-glow 2.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

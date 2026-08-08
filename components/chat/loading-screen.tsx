@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Bot, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { DeskwiseMark } from "@/components/brand/deskwise-logo";
 
 /**
  * Loading state for the chat.
@@ -55,9 +56,7 @@ export function ChatLoadingScreen() {
       {/* Header skeleton */}
       <header className="flex items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-900/70 px-3 py-2.5 sm:px-6 sm:py-4">
         <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 sm:h-10 sm:w-10">
-            <Bot className="h-5 w-5 text-white" />
-          </div>
+          <DeskwiseMark className="h-9 w-9 shrink-0 sm:h-10 sm:w-10" />
           <div className="space-y-1.5">
             <Shimmer className="h-3.5 w-24 sm:w-28" />
             <Shimmer className="h-2.5 w-32 sm:w-40" />

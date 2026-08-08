@@ -62,6 +62,7 @@ User Upload
 | **Admin Panel** | Upload KB docs, view chunk metrics and usage analytics, trigger re-indexing at `/admin` — writes gated by `ADMIN_TOKEN` |
 | **Usage Analytics** | Most-asked questions, thumbs-down rate, escalation tickets and upload volume, aggregated from Neon |
 | **Rate Limiting** | Sliding-window per-session limiter (10 req/60s) with friendly UI error |
+| **Branded Splash** | Full-screen Deskwise logo, tagline and progress bar held for a fixed 2.5s on start-up, so the entrance is identical on a warm load and a cold one. Runs concurrently with the history fetch, so on a warm load it costs nothing |
 | **Cold-Start Skeleton** | Loading state shaped like the chat itself (header, message rows, composer) so nothing jumps when content arrives; status copy escalates to "waking up the database" if Neon is autosuspended, via `role="status"` for screen readers. Also wired to Next.js `loading.tsx` for both routes |
 | **Evaluation Harness** | 25-case benchmark measuring confidence accuracy and fallback precision |
 
@@ -163,14 +164,17 @@ deskwise/
 │   ├── admin/page.tsx               # Admin dashboard UI
 │   ├── admin/loading.tsx            # Route-level loading skeleton for /admin
 │   ├── loading.tsx                  # Route-level loading skeleton for the chat
+│   ├── icon.svg                     # Browser-tab icon (same mark as the splash)
 │   ├── page.tsx                     # Chat interface page
 │   └── layout.tsx                   # Root layout + SEO metadata + viewport
 ├── components/
+│   ├── brand/deskwise-logo.tsx      # Inline SVG mark + wordmark (also app/icon.svg)
 │   └── chat/
 │       ├── chat-interface.tsx       # Responsive streaming chat shell
 │       ├── document-panel.tsx       # Upload/link manager (bottom sheet / side drawer)
 │       ├── use-documents.ts         # Upload, import-by-link, list and delete hook
 │       ├── use-visual-viewport.ts   # Keeps the composer above the mobile keyboard
+│       ├── splash-screen.tsx        # Branded 2.5s start-up screen
 │       ├── loading-screen.tsx       # Cold-start skeleton + escalating status copy
 │       ├── citations.tsx            # Expandable source panel
 │       ├── markdown.tsx             # Streaming-safe markdown renderer
