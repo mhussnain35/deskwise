@@ -110,6 +110,10 @@ export async function runFullIngestion(): Promise<IngestionReport> {
 
         if (existingDoc.length > 0) {
           docId = existingDoc[0].id;
+          await db
+            .update(docs)
+            .set({ scope: "kb", filename, fileType: "md", chunkCount: chunks.length })
+            .where(eq(docs.id, docId));
         } else {
           const [insertedDoc] = await db
             .insert(docs)
@@ -117,6 +121,11 @@ export async function runFullIngestion(): Promise<IngestionReport> {
               id: docId,
               title: filename,
               sourceUrl: `/kb-docs/${filename}`,
+              scope: "kb",
+              filename,
+              fileType: "md",
+              sizeBytes: Buffer.byteLength(content, "utf-8"),
+              chunkCount: chunks.length,
             })
             .returning();
           docId = insertedDoc.id;
@@ -141,8 +150,11 @@ export async function runFullIngestion(): Promise<IngestionReport> {
         try {
           await db.insert(docChunks).values({
             docId,
+            title: chunk.title,
             content: chunk.content,
             section: chunk.section,
+            chunkIndex: idx,
+            scope: "kb",
             qdrantPointId: pointId,
           });
         } catch (dbErr) {

@@ -54,6 +54,32 @@ export async function embedText(text: string): Promise<number[]> {
   }
 }
 
+/**
+ * Embed many texts with bounded concurrency.
+ *
+ * Uploaded documents produce tens of chunks at once. Embedding them one at a
+ * time makes a 40-chunk PDF take most of a minute (and risks the serverless
+ * timeout), while firing all of them in parallel trips the Gemini free-tier
+ * per-minute quota. Four at a time is the compromise.
+ */
+export async function embedTexts(texts: string[], concurrency = 4): Promise<number[][]> {
+  const vectors: number[][] = new Array(texts.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (cursor < texts.length) {
+      const index = cursor++;
+      vectors[index] = await embedText(texts[index]);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, texts.length) }, () => worker())
+  );
+
+  return vectors;
+}
+
 function normalize(vec: number[]): number[] {
   const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
   return vec.map((v) => v / norm);

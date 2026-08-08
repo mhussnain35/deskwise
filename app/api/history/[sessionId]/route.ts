@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { conversations, messages, docChunks } from "@/lib/db/schema";
-import { eq, asc, inArray } from "drizzle-orm";
+import { eq, asc, inArray, or } from "drizzle-orm";
+import { isValidSessionId } from "@/lib/session";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function GET(
   req: NextRequest,
@@ -12,8 +15,8 @@ export async function GET(
     const resolvedParams = await params;
     sessionId = resolvedParams?.sessionId || "";
 
-    if (!sessionId) {
-      return NextResponse.json({ error: "Session ID is required" }, { status: 400 });
+    if (!isValidSessionId(sessionId)) {
+      return NextResponse.json({ error: "A valid session ID is required" }, { status: 400 });
     }
 
     if (!db) {
@@ -49,24 +52,44 @@ export async function GET(
         }
       });
 
-      const chunkMap: Record<string, { id: string; title: string; section: string; content: string }> = {};
+      type HistoryCitation = {
+        id: string;
+        title: string;
+        section: string;
+        content: string;
+        scope: "kb" | "user";
+      };
+      const chunkMap: Record<string, HistoryCitation> = {};
 
       if (allCitedChunkIds.length > 0) {
         try {
+          // Knowledge base chunks are cited by their Qdrant point id; chunks
+          // from a user's own upload never reach Qdrant and are cited by their
+          // doc_chunks primary key. Both forms are resolved in one pass.
+          const uuidCitedIds = allCitedChunkIds.filter((id) => UUID_PATTERN.test(id));
+
           const fetchedChunks = await db
             .select()
             .from(docChunks)
-            .where(inArray(docChunks.qdrantPointId, allCitedChunkIds));
+            .where(
+              uuidCitedIds.length > 0
+                ? or(
+                    inArray(docChunks.qdrantPointId, allCitedChunkIds),
+                    inArray(docChunks.id, uuidCitedIds)
+                  )
+                : inArray(docChunks.qdrantPointId, allCitedChunkIds)
+            );
 
           fetchedChunks.forEach((c) => {
-            if (c.qdrantPointId) {
-              chunkMap[c.qdrantPointId] = {
-                id: c.qdrantPointId,
-                title: "Document",
-                section: c.section || "",
-                content: c.content,
-              };
-            }
+            const citation: HistoryCitation = {
+              id: c.qdrantPointId || c.id,
+              title: c.title || "Document",
+              section: c.section || "",
+              content: c.content,
+              scope: c.scope === "user" ? "user" : "kb",
+            };
+            if (c.qdrantPointId) chunkMap[c.qdrantPointId] = citation;
+            chunkMap[c.id] = citation;
           });
         } catch (chunkErr) {
           console.warn("[History API] Error fetching chunk metadata:", chunkErr);
@@ -76,7 +99,16 @@ export async function GET(
       // 4. Map message history payload
       const formattedMessages = messageRows.map((m) => {
         const citations = Array.isArray(m.citedChunkIds)
-          ? m.citedChunkIds.map((id) => chunkMap[id] || { id, title: "Source Document", section: "", content: "" })
+          ? m.citedChunkIds.map(
+              (id) =>
+                chunkMap[id] || {
+                  id,
+                  title: "Source Document",
+                  section: "",
+                  content: "",
+                  scope: "kb" as const,
+                }
+            )
           : [];
 
         return {

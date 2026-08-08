@@ -1,6 +1,6 @@
 # Deskwise RAG Evaluation Benchmark — Results
 
-**Run Date:** 2026-07-31T12:16:01.915Z  
+**Run Date:** 2026-08-08T06:01:41.664Z  
 **Embedding Backend:** Gemini text-embedding-004 (live)  
 **Confidence Threshold:** `0.55`  
 **Test Cases:** 25 total (15 in-scope, 10 out-of-scope)

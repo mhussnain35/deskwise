@@ -2,11 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { ai, MODEL_NAME } from "@/lib/ai/gemini";
 import { db } from "@/lib/db";
-import { conversations, messages } from "@/lib/db/schema";
+import { conversations, messages, tickets } from "@/lib/db/schema";
 import { retrieveContext, type RetrievedChunk } from "@/lib/rag/retriever";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { isValidSessionId } from "@/lib/session";
 import { UpstreamError, toUpstreamError, logUpstream } from "@/lib/errors";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
+
+// Retrieval reads uploaded documents through the Node-only parsing stack.
+export const runtime = "nodejs";
+
+/** How many prior turns are replayed so follow-up questions resolve. */
+const HISTORY_TURNS = 6;
 
 // Citations ride on a response header, so they must stay well inside the ~4 KB
 // per-header ceiling enforced by Vercel/AWS. Full chunk bodies used to be sent
@@ -26,6 +33,8 @@ function buildCitationsHeader(chunks: RetrievedChunk[]): string {
         ? c.content.slice(0, CITATION_SNIPPET_CHARS).trimEnd() + "…"
         : c.content,
     score: c.score,
+    keywordScore: Number(c.keywordScore.toFixed(3)),
+    scope: c.scope,
   }));
 
   // Drop trailing citations rather than emit a header the platform will reject.
@@ -36,6 +45,49 @@ function buildCitationsHeader(chunks: RetrievedChunk[]): string {
   }
 
   return encodeURIComponent(JSON.stringify(citations));
+}
+
+/** Prior turns, oldest first, for multi-turn context. */
+async function loadRecentTurns(
+  conversationId: string
+): Promise<{ role: string; content: string }[]> {
+  if (!db) return [];
+  try {
+    const rows = await db
+      .select({ role: messages.role, content: messages.content })
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId))
+      .orderBy(desc(messages.createdAt))
+      .limit(HISTORY_TURNS);
+
+    return rows.reverse();
+  } catch (err) {
+    console.warn("[Chat API] Could not load conversation history:", err);
+    return [];
+  }
+}
+
+/**
+ * Record a handoff when the guardrail fires (spec section 6).
+ * Best-effort: a failed insert must not change what the user is told.
+ */
+async function createEscalationTicket(
+  sessionId: string,
+  conversationId: string | null,
+  question: string,
+  topScore: number
+): Promise<void> {
+  if (!db) return;
+  try {
+    await db.insert(tickets).values({
+      sessionId,
+      conversationId,
+      question: question.slice(0, 2000),
+      topScore,
+    });
+  } catch (err) {
+    console.warn("[Chat API] Could not record escalation ticket:", err);
+  }
 }
 
 async function saveAssistantMessage(
@@ -66,7 +118,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Message is required" }, { status: 400 });
     }
 
-    const activeSessionId = sessionId || "default-session";
+    const activeSessionId = isValidSessionId(sessionId) ? sessionId : "default-session";
 
     // Phase 8 — Rate limiting: 10 req / 60s per session
     const rl = checkRateLimit(activeSessionId);
@@ -82,6 +134,7 @@ export async function POST(req: NextRequest) {
     }
 
     let conversationId: string | null = null;
+    let priorTurns: { role: string; content: string }[] = [];
 
     // 1. Database Operations: Log or find active conversation turn
     if (db) {
@@ -94,6 +147,9 @@ export async function POST(req: NextRequest) {
 
         if (existingConvs.length > 0) {
           conversationId = existingConvs[0].id;
+          // Read history before the current question is written, so the model
+          // isn't handed the question twice.
+          priorTurns = await loadRecentTurns(conversationId);
         } else {
           const [newConv] = await db
             .insert(conversations)
@@ -122,22 +178,32 @@ export async function POST(req: NextRequest) {
     // uuid-typed feedback.message_id column rejected on every single insert.
     const assistantMessageId = crypto.randomUUID();
 
-    // 2. Perform RAG Retrieval against Knowledge Base
-    const retrieval = await retrieveContext(message, 5);
+    // 2. Perform RAG Retrieval across the knowledge base and this session's
+    //    own uploaded documents.
+    const retrieval = await retrieveContext(message, 5, { sessionId: activeSessionId });
     const encoder = new TextEncoder();
 
     // 3. Confidence Guardrail Check
     if (!retrieval.confidencePassed) {
       const fallbackMessage =
-        "I'm sorry, I couldn't find a direct answer to that in our SaaS documentation.\n\n" +
-        "Here is how you can get help:\n" +
-        "• Contact our Human Support Team at **support@deskwise.io**\n" +
-        "• Visit **Account Settings > Help Center** in your admin dashboard.\n";
+        "I couldn't find a confident answer to that in the documentation I have access to.\n\n" +
+        "Here is how to get further:\n" +
+        "• Attach the document it's covered in — use the **paperclip button** and ask again.\n" +
+        "• Email our support team at **support@deskwise.io**\n" +
+        "• Visit **Account Settings > Help Center** in your admin dashboard.\n\n" +
+        "_A support ticket has been logged with your question._";
 
       // Log assistant fallback turn to DB
       if (conversationId) {
         await saveAssistantMessage(conversationId, assistantMessageId, fallbackMessage);
       }
+
+      await createEscalationTicket(
+        activeSessionId,
+        conversationId,
+        message,
+        retrieval.topScore
+      );
 
       return new Response(fallbackMessage, {
         headers: {
@@ -152,7 +218,9 @@ export async function POST(req: NextRequest) {
     const contextPrompt = retrieval.chunks
       .map(
         (chunk, idx) =>
-          `[Source ${idx + 1}] Title: ${chunk.title} | Section: ${chunk.section}\n${chunk.content}`
+          `[Source ${idx + 1}] Origin: ${
+            chunk.scope === "user" ? "Document uploaded by this user" : "Company knowledge base"
+          } | Title: ${chunk.title} | Section: ${chunk.section}\n${chunk.content}`
       )
       .join("\n\n---\n\n");
 
@@ -160,11 +228,28 @@ export async function POST(req: NextRequest) {
 
     const systemInstruction =
       "You are Deskwise, an AI customer support assistant for SaaS billing & subscription support.\n" +
+      "You answer from two kinds of source: the company knowledge base, and documents the user " +
+      "uploaded themselves for this conversation.\n" +
       "STRICT RULES:\n" +
       "1. Answer the user's question accurately using ONLY the provided Knowledge Base Context.\n" +
       "2. Be concise, professional, and clear.\n" +
-      "3. Reference source documents when explaining policies.\n" +
-      "4. Do NOT hallucinate information not present in the context.";
+      "3. Reference source documents when explaining policies, and say when an answer comes from " +
+      "the user's own uploaded document.\n" +
+      "4. Do NOT hallucinate information not present in the context.\n" +
+      "5. Earlier turns are provided for context — resolve follow-up questions and pronouns " +
+      "against them, but never answer from them alone.";
+
+    // Replay recent turns so follow-ups ("what about the annual plan?") resolve.
+    // Each turn's retrieved context is intentionally not replayed — only the
+    // current question's sources are in scope, which keeps the prompt small and
+    // stops a stale chunk from being cited for a new answer.
+    const contents = [
+      ...priorTurns.map((turn) => ({
+        role: turn.role === "assistant" ? "model" : "user",
+        parts: [{ text: turn.content }],
+      })),
+      { role: "user", parts: [{ text: fullUserPrompt }] },
+    ];
 
     // Format citations header for UI display
     const citationData = buildCitationsHeader(retrieval.chunks);
@@ -207,7 +292,7 @@ export async function POST(req: NextRequest) {
     try {
       responseStream = await ai.models.generateContentStream({
         model: MODEL_NAME,
-        contents: fullUserPrompt,
+        contents,
         config: {
           systemInstruction,
         },

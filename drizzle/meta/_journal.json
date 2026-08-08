@@ -8,6 +8,13 @@
       "when": 1785302651491,
       "tag": "0000_late_veda",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786165008333,
+      "tag": "0001_amusing_kulan_gath",
+      "breakpoints": true
     }
   ]
 }

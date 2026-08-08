@@ -1,25 +1,26 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { Send, Bot, User, RefreshCw, FileText, ChevronDown, ChevronUp, ShieldCheck, ThumbsUp, ThumbsDown, Settings, Zap } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-
-interface Citation {
-  id: string;
-  title: string;
-  section: string;
-  content: string;
-  score?: number;
-}
-
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  isStreaming?: boolean;
-  citations?: Citation[];
-  feedback?: "up" | "down";
-}
+import {
+  Bot,
+  FolderOpen,
+  Paperclip,
+  RefreshCw,
+  Send,
+  Settings,
+  ShieldCheck,
+  ThumbsDown,
+  ThumbsUp,
+  UploadCloud,
+  User,
+  Zap,
+} from "lucide-react";
+import { CitationsList } from "./citations";
+import { DocumentPanel, UPLOAD_ACCEPT } from "./document-panel";
+import { Markdown } from "./markdown";
+import { useDocuments } from "./use-documents";
+import type { Citation, Message } from "./types";
 
 const SAMPLE_PROMPTS = [
   "How do I upgrade my subscription plan?",
@@ -28,23 +29,10 @@ const SAMPLE_PROMPTS = [
   "How do I request a tax invoice?",
 ];
 
-/** Lightweight markdown renderer: bold, inline code, line breaks */
-function renderMarkdown(text: string) {
-  return text.split("\n").map((line, lineIdx) => {
-    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-    return (
-      <span key={lineIdx}>
-        {parts.map((part, i) => {
-          if (part.startsWith("**") && part.endsWith("**"))
-            return <strong key={i} className="font-semibold text-white">{part.slice(2, -2)}</strong>;
-          if (part.startsWith("`") && part.endsWith("`"))
-            return <code key={i} className="px-1 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-[11px]">{part.slice(1, -1)}</code>;
-          return <span key={i}>{part}</span>;
-        })}
-        {lineIdx < text.split("\n").length - 1 && <br />}
-      </span>
-    );
-  });
+const SESSION_STORAGE_KEY = "deskwise_session_id";
+
+function newSessionId(): string {
+  return "session_" + Math.random().toString(36).substring(2, 9);
 }
 
 export default function ChatInterface() {
@@ -55,9 +43,17 @@ export default function ChatInterface() {
   const [rateLimitMsg, setRateLimitMsg] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
   const [feedbackState, setFeedbackState] = useState<Record<string, "up" | "down">>({});
+  const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerFileRef = useRef<HTMLInputElement>(null);
   const localIdCounter = useRef(0);
+  const dragDepth = useRef(0);
+
+  const documentsState = useDocuments(sessionId);
+  const { documents, upload, uploadingName } = documentsState;
 
   /** Client-side key for a message until the server hands back its database id. */
   const nextLocalId = () => `local_${localIdCounter.current++}`;
@@ -66,10 +62,10 @@ export default function ChatInterface() {
     let cancelled = false;
 
     (async () => {
-      let storedSession = localStorage.getItem("deskwise_session_id");
+      let storedSession = localStorage.getItem(SESSION_STORAGE_KEY);
       if (!storedSession) {
-        storedSession = "session_" + Math.random().toString(36).substring(2, 9);
-        localStorage.setItem("deskwise_session_id", storedSession);
+        storedSession = newSessionId();
+        localStorage.setItem(SESSION_STORAGE_KEY, storedSession);
       }
 
       // Load past conversation history (covers Neon cold-start latency)
@@ -93,8 +89,20 @@ export default function ChatInterface() {
   }, []);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
+
+  /** Grow the composer with its content, up to roughly six lines. */
+  const resizeComposer = useCallback(() => {
+    const node = textareaRef.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+  }, []);
+
+  useEffect(() => {
+    resizeComposer();
+  }, [input, resizeComposer]);
 
   const handleSendMessage = async (textToSend?: string) => {
     const query = (textToSend || input).trim();
@@ -187,11 +195,7 @@ export default function ChatInterface() {
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantMessageId
-            ? {
-                ...msg,
-                content: detail,
-                isStreaming: false,
-              }
+            ? { ...msg, content: detail, isStreaming: false, failed: true }
             : msg
         )
       );
@@ -224,8 +228,18 @@ export default function ChatInterface() {
     }
   };
 
+  /**
+   * Enter sends on a keyboard, but inserts a newline on touch devices — on a
+   * phone the return key is the only way to type a second line, and there is a
+   * send button right there.
+   */
+  const isTouchDevice = useMemo(
+    () => typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches,
+    []
+  );
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !isTouchDevice) {
       e.preventDefault();
       handleSendMessage();
     }
@@ -234,17 +248,48 @@ export default function ChatInterface() {
   const handleClearChat = () => {
     setMessages([]);
     setRateLimitMsg(null);
-    const newSession = "session_" + Math.random().toString(36).substring(2, 9);
-    localStorage.setItem("deskwise_session_id", newSession);
-    setSessionId(newSession);
+    setFeedbackState({});
+    const nextSession = newSessionId();
+    localStorage.setItem(SESSION_STORAGE_KEY, nextSession);
+    setSessionId(nextSession);
+  };
+
+  const handleComposerFiles = (files: FileList | null) => {
+    if (files && files.length > 0) {
+      void upload(files);
+      setIsPanelOpen(true);
+    }
+    if (composerFileRef.current) composerFileRef.current.value = "";
+  };
+
+  // Whole-window drag and drop, so a file can be dropped anywhere on the chat.
+  const handleDragEnter = (event: React.DragEvent) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    dragDepth.current += 1;
+    setIsDraggingFile(true);
+  };
+
+  const handleDragLeave = () => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setIsDraggingFile(false);
+  };
+
+  const handleDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setIsDraggingFile(false);
+    if (event.dataTransfer.files?.length) {
+      void upload(event.dataTransfer.files);
+      setIsPanelOpen(true);
+    }
   };
 
   // Show cold-start initializing overlay
   if (isInitializing) {
     return (
-      <div className="flex flex-col h-screen max-w-5xl mx-auto w-full bg-slate-950 text-slate-100 font-sans shadow-2xl overflow-hidden border-x border-slate-800/60 items-center justify-center gap-4">
-        <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg animate-pulse">
-          <Bot className="w-6 h-6 text-white" />
+      <div className="flex h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-slate-950 px-6 text-center font-sans text-slate-100">
+        <div className="flex h-12 w-12 animate-pulse items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 shadow-lg">
+          <Bot className="h-6 w-6 text-white" />
         </div>
         <p className="text-sm text-slate-400">Connecting to Deskwise…</p>
         <p className="text-xs text-slate-600">Warming up database connection</p>
@@ -253,162 +298,114 @@ export default function ChatInterface() {
   }
 
   return (
-    <div className="flex flex-col h-screen max-w-5xl mx-auto w-full bg-slate-950 text-slate-100 font-sans shadow-2xl overflow-hidden border-x border-slate-800/60">
-      {/* Top Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <Bot className="w-5 h-5 text-white" />
+    <div
+      onDragEnter={handleDragEnter}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="relative mx-auto flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden bg-slate-950 font-sans text-slate-100 shadow-2xl sm:border-x sm:border-slate-800/60"
+    >
+      {/* Header */}
+      <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-900/70 px-3 py-2.5 backdrop-blur-md sm:px-6 sm:py-4">
+        <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 shadow-lg shadow-indigo-500/20 sm:h-10 sm:w-10">
+            <Bot className="h-5 w-5 text-white" />
           </div>
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="font-semibold text-lg tracking-tight text-white">Deskwise</h1>
-              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3" /> RAG Enabled
+              <h1 className="truncate text-base font-semibold tracking-tight text-white sm:text-lg">
+                Deskwise
+              </h1>
+              <span className="hidden items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-400 xs:flex">
+                <ShieldCheck className="h-3 w-3" /> RAG
               </span>
             </div>
-            <p className="text-xs text-slate-400">SaaS Billing & Support Agent</p>
+            <p className="truncate text-[11px] text-slate-400 sm:text-xs">
+              SaaS Billing &amp; Support Agent
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+          <button
+            onClick={() => setIsPanelOpen(true)}
+            title="Your uploaded documents"
+            className="relative flex items-center gap-1.5 rounded-lg border border-slate-700/60 bg-slate-800/80 px-2.5 py-2 text-xs text-slate-300 transition-colors hover:bg-slate-800 hover:text-white sm:px-3 sm:py-1.5"
+          >
+            <FolderOpen className="h-4 w-4 text-indigo-400 sm:h-3.5 sm:w-3.5" />
+            <span className="hidden sm:inline">Documents</span>
+            {documents.length > 0 && (
+              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-indigo-500 px-1 text-[10px] font-semibold text-white">
+                {documents.length}
+              </span>
+            )}
+          </button>
+
           <Link
             href="/admin"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-800 rounded-lg border border-slate-700/60 transition-colors"
-            title="KB Admin Management Panel"
+            title="KB admin panel"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700/60 bg-slate-800/80 px-2.5 py-2 text-xs text-slate-300 transition-colors hover:bg-slate-800 hover:text-white sm:px-3 sm:py-1.5"
           >
-            <Settings className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="hidden sm:inline">Admin Panel</span>
+            <Settings className="h-4 w-4 text-indigo-400 sm:h-3.5 sm:w-3.5" />
+            <span className="hidden sm:inline">Admin</span>
           </Link>
 
           <button
             onClick={handleClearChat}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 bg-slate-800/60 hover:bg-slate-800 rounded-lg border border-slate-700/50 transition-colors"
-            title="Reset conversation session"
+            title="Start a new conversation"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700/50 bg-slate-800/60 px-2.5 py-2 text-xs text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 sm:px-3 sm:py-1.5"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>New Chat</span>
+            <RefreshCw className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+            <span className="hidden sm:inline">New chat</span>
           </button>
         </div>
       </header>
 
-      {/* Message Area */}
-      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
+      {/* Messages */}
+      <main className="flex-1 space-y-5 overflow-y-auto overscroll-contain px-3 py-5 sm:space-y-6 sm:px-6 sm:py-6">
         {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full max-w-md mx-auto text-center space-y-6 py-12">
-            <div className="relative">
-              <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-xl shadow-indigo-500/20">
-                <Bot className="w-8 h-8 text-white" />
-              </div>
-              <span className="absolute -top-1 -right-1 w-5 h-5 bg-emerald-500 rounded-full border-2 border-slate-950 flex items-center justify-center">
-                <Zap className="w-2.5 h-2.5 text-white" />
-              </span>
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-white mb-2">Welcome to Deskwise</h2>
-              <p className="text-sm text-slate-400 leading-relaxed">
-                Your AI billing support agent. Answers grounded in your documentation — no hallucinations, with source citations on every response.
-              </p>
-            </div>
-
-            <div className="w-full space-y-2 pt-2">
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
-                Suggested Prompts
-              </p>
-              {SAMPLE_PROMPTS.map((prompt, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => handleSendMessage(prompt)}
-                  className="w-full text-left text-xs text-slate-300 bg-slate-900/80 hover:bg-indigo-950/40 hover:text-indigo-200 border border-slate-800 hover:border-indigo-500/30 px-4 py-3 rounded-xl transition-all duration-150 flex items-center justify-between group"
-                >
-                  <span>{prompt}</span>
-                  <Send className="w-3.5 h-3.5 text-slate-600 group-hover:text-indigo-400 transition-colors" />
-                </button>
-              ))}
-            </div>
-          </div>
+          <EmptyState
+            onPrompt={(prompt) => handleSendMessage(prompt)}
+            onUpload={() => setIsPanelOpen(true)}
+            documentCount={documents.length}
+          />
         ) : (
           messages.map((msg) => (
-            <div
+            <MessageRow
               key={msg.id}
-              className={`flex items-start gap-3.5 ${
-                msg.role === "user" ? "flex-row-reverse" : "flex-row"
-              }`}
-            >
-              {/* Avatar */}
-              <div
-                className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs shrink-0 ${
-                  msg.role === "user"
-                    ? "bg-slate-700 text-slate-200"
-                    : "bg-gradient-to-tr from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-500/10"
-                }`}
-              >
-                {msg.role === "user" ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
-              </div>
-
-              {/* Message Bubble & Controls */}
-              <div className="flex flex-col space-y-2 max-w-[85%] sm:max-w-[78%]">
-                <div
-                  className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                    msg.role === "user"
-                      ? "bg-indigo-600 text-white rounded-tr-xs"
-                      : "bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-xs shadow-sm"
-                  }`}
-                >
-                  <div className="whitespace-pre-wrap">
-                    {msg.role === "assistant" ? renderMarkdown(msg.content) : msg.content}
-                  </div>
-                  {msg.isStreaming && (
-                    <span className="inline-block w-1.5 h-4 ml-1 bg-indigo-400 animate-pulse rounded-sm align-middle" />
-                  )}
-                </div>
-
-                {/* Source Citations & Feedback Bar */}
-                {msg.role === "assistant" && !msg.isStreaming && (
-                  <div className="flex flex-col space-y-2">
-                    {msg.citations && msg.citations.length > 0 && (
-                      <CitationsList citations={msg.citations} />
-                    )}
-
-                    {/* Thumbs Up/Down Feedback Buttons */}
-                    <div className="flex items-center justify-end gap-1.5 text-slate-500 pt-0.5">
-                      <span className="text-[10px]">Was this helpful?</span>
-                      <button
-                        onClick={() => handleFeedback(msg.id, "up")}
-                        className={`p-1 rounded hover:bg-slate-800 hover:text-slate-200 transition-colors ${
-                          feedbackState[msg.id] === "up" ? "text-emerald-400 bg-emerald-500/10" : ""
-                        }`}
-                        title="Helpful"
-                      >
-                        <ThumbsUp className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleFeedback(msg.id, "down")}
-                        className={`p-1 rounded hover:bg-slate-800 hover:text-slate-200 transition-colors ${
-                          feedbackState[msg.id] === "down" ? "text-rose-400 bg-rose-500/10" : ""
-                        }`}
-                        title="Not helpful"
-                      >
-                        <ThumbsDown className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
+              message={msg}
+              rating={feedbackState[msg.id]}
+              onFeedback={handleFeedback}
+            />
           ))
         )}
         <div ref={messagesEndRef} />
       </main>
 
-      {/* Input Form */}
-      <footer className="p-4 sm:p-6 bg-slate-900/80 border-t border-slate-800/80 backdrop-blur-md">
+      {/* Composer */}
+      <footer className="border-t border-slate-800/80 bg-slate-900/80 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-md sm:px-6 sm:pb-5 sm:pt-4">
         {rateLimitMsg && (
-          <div className="mx-4 mb-3 px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-center gap-2">
-            <span className="text-amber-400">⚠️</span>
-            <span>{rateLimitMsg}</span>
-            <button onClick={() => setRateLimitMsg(null)} className="ml-auto text-amber-500 hover:text-amber-300">✕</button>
+          <div className="mb-2.5 flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-300">
+            <span className="shrink-0 text-amber-400">⚠️</span>
+            <span className="flex-1">{rateLimitMsg}</span>
+            <button
+              onClick={() => setRateLimitMsg(null)}
+              aria-label="Dismiss"
+              className="shrink-0 text-amber-500 hover:text-amber-300"
+            >
+              ✕
+            </button>
           </div>
+        )}
+
+        {uploadingName && (
+          <button
+            onClick={() => setIsPanelOpen(true)}
+            className="mb-2.5 flex w-full items-center gap-2 rounded-xl border border-indigo-500/20 bg-indigo-500/10 px-3 py-2 text-left text-xs text-indigo-300"
+          >
+            <UploadCloud className="h-3.5 w-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Indexing &ldquo;{uploadingName}&rdquo;…</span>
+          </button>
         )}
 
         <form
@@ -416,92 +413,218 @@ export default function ChatInterface() {
             e.preventDefault();
             handleSendMessage();
           }}
-          className="relative flex items-center"
+          className="flex items-end gap-2 rounded-2xl border border-slate-800 bg-slate-950 p-1.5 transition-colors focus-within:border-indigo-500/60 focus-within:ring-2 focus-within:ring-indigo-500/20"
         >
+          <button
+            type="button"
+            onClick={() => composerFileRef.current?.click()}
+            aria-label="Attach a document"
+            title="Attach a document to ask questions about"
+            className="shrink-0 rounded-xl p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-indigo-300"
+          >
+            <Paperclip className="h-5 w-5" />
+          </button>
+
+          <input
+            ref={composerFileRef}
+            type="file"
+            accept={UPLOAD_ACCEPT}
+            multiple
+            className="hidden"
+            onChange={(event) => handleComposerFiles(event.target.files)}
+          />
+
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about subscription plans, billing, or refunds..."
+            placeholder={
+              documents.length > 0
+                ? "Ask about your documents or billing…"
+                : "Ask about plans, billing, or refunds…"
+            }
             rows={1}
             disabled={isLoading}
-            className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20 text-slate-100 placeholder-slate-500 rounded-xl py-3.5 pl-4 pr-12 text-sm outline-none resize-none transition-all duration-150 disabled:opacity-50"
+            aria-label="Message"
+            /* 16px base font size keeps iOS Safari from zooming on focus. */
+            className="max-h-40 min-h-[2.75rem] flex-1 resize-none bg-transparent py-2.5 text-base text-slate-100 placeholder-slate-500 outline-none disabled:opacity-50 sm:text-sm"
           />
+
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="absolute right-2.5 p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:bg-slate-800 disabled:text-slate-600 transition-all duration-150 shadow-md shadow-indigo-600/20"
+            aria-label="Send message"
+            className="shrink-0 rounded-xl bg-indigo-600 p-2.5 text-white shadow-md shadow-indigo-600/20 transition-all hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:shadow-none"
           >
-            <Send className="w-4 h-4" />
+            <Send className="h-5 w-5" />
           </button>
         </form>
 
-        <div className="flex items-center justify-between text-[11px] text-slate-500 mt-2 px-1">
-          <span>Deskwise RAG • Gemini 2.0 Flash + Hybrid Search</span>
-          <span className="text-slate-600">Rate limit: 10 msg/min per session</span>
+        <div className="mt-2 flex items-center justify-between gap-3 px-1 text-[10px] text-slate-500 sm:text-[11px]">
+          <span className="truncate">Gemini 2.0 Flash · hybrid retrieval</span>
+          <span className="hidden shrink-0 text-slate-600 xs:inline">10 msg/min per session</span>
         </div>
       </footer>
+
+      {/* Drag overlay */}
+      {isDraggingFile && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-indigo-400 px-8 py-10">
+            <UploadCloud className="h-10 w-10 text-indigo-400" />
+            <p className="text-sm font-medium text-white">Drop your document to ask about it</p>
+            <p className="text-xs text-slate-400">PDF, DOCX, Markdown, TXT, CSV or JSON</p>
+          </div>
+        </div>
+      )}
+
+      <DocumentPanel
+        open={isPanelOpen}
+        onClose={() => setIsPanelOpen(false)}
+        state={documentsState}
+      />
     </div>
   );
 }
 
-/** Expandable Source Citations Component */
-function CitationsList({ citations }: { citations: Citation[] }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-
+function EmptyState({
+  onPrompt,
+  onUpload,
+  documentCount,
+}: {
+  onPrompt: (prompt: string) => void;
+  onUpload: () => void;
+  documentCount: number;
+}) {
   return (
-    <div className="mt-1 border border-slate-800/80 bg-slate-900/40 rounded-xl p-3 text-xs">
+    <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center space-y-6 py-8 text-center">
+      <div className="relative">
+        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 shadow-xl shadow-indigo-500/20">
+          <Bot className="h-8 w-8 text-white" />
+        </div>
+        <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-slate-950 bg-emerald-500">
+          <Zap className="h-2.5 w-2.5 text-white" />
+        </span>
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-lg font-semibold text-white sm:text-xl">Welcome to Deskwise</h2>
+        <p className="text-sm leading-relaxed text-slate-400">
+          Ask about billing and subscriptions, or upload your own document and ask about that.
+          Every answer cites the sections it came from.
+        </p>
+      </div>
+
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="flex items-center justify-between w-full text-slate-400 hover:text-slate-200 font-medium transition-colors"
+        onClick={onUpload}
+        className="flex w-full items-center justify-center gap-2 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm font-medium text-indigo-200 transition-colors hover:bg-indigo-500/20"
       >
-        <div className="flex items-center gap-1.5">
-          <FileText className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Retrieved {citations.length} Source Document{citations.length > 1 ? "s" : ""}</span>
-        </div>
-        <div className="flex items-center gap-1 text-[11px] text-indigo-400">
-          <span>{isExpanded ? "Hide Sources" : "View Sources"}</span>
-          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-        </div>
+        <UploadCloud className="h-4 w-4" />
+        {documentCount > 0
+          ? `${documentCount} document${documentCount === 1 ? "" : "s"} attached — manage`
+          : "Upload a document"}
       </button>
 
-      {isExpanded && (
-        <div className="mt-3 space-y-2.5 pt-2 border-t border-slate-800/60">
-          {citations.map((c, idx) => (
-            <div
-              key={c.id || idx}
-              className="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80 space-y-1"
-            >
-              <div className="flex items-center justify-between text-slate-300 font-medium">
-                <div className="flex items-center gap-1.5 truncate">
-                  <span className="w-4 h-4 rounded bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-[10px] shrink-0 font-mono">
-                    {idx + 1}
-                  </span>
-                  <span className="truncate">{c.title}</span>
-                </div>
-                {c.score !== undefined && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0 font-mono">
-                    {(c.score * 100).toFixed(0)}% Match
-                  </span>
-                )}
-              </div>
+      <div className="w-full space-y-2">
+        <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
+          Try asking
+        </p>
+        {SAMPLE_PROMPTS.map((prompt) => (
+          <button
+            key={prompt}
+            onClick={() => onPrompt(prompt)}
+            className="group flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-left text-xs text-slate-300 transition-all duration-150 hover:border-indigo-500/30 hover:bg-indigo-950/40 hover:text-indigo-200 sm:text-sm"
+          >
+            <span>{prompt}</span>
+            <Send className="h-3.5 w-3.5 shrink-0 text-slate-600 transition-colors group-hover:text-indigo-400" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-              {c.section && (
-                <p className="text-[11px] text-indigo-300/80 font-mono font-medium">
-                  📌 {c.section}
-                </p>
-              )}
+function MessageRow({
+  message,
+  rating,
+  onFeedback,
+}: {
+  message: Message;
+  rating?: "up" | "down";
+  onFeedback: (messageId: string, rating: "up" | "down") => void;
+}) {
+  const isUser = message.role === "user";
 
-              {c.content && (
-                <p className="text-slate-400 text-[11px] leading-relaxed line-clamp-3 bg-slate-900/60 p-2 rounded border border-slate-800/40">
-                  &ldquo;{c.content}&rdquo;
-                </p>
-              )}
-            </div>
-          ))}
+  return (
+    <div className={`flex items-start gap-2.5 sm:gap-3.5 ${isUser ? "flex-row-reverse" : ""}`}>
+      <div
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs ${
+          isUser
+            ? "bg-slate-700 text-slate-200"
+            : "bg-gradient-to-tr from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-500/10"
+        }`}
+      >
+        {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+      </div>
+
+      <div
+        className={`flex min-w-0 max-w-[calc(100%-3rem)] flex-col space-y-2 sm:max-w-[78%] ${
+          isUser ? "items-end" : "items-start"
+        }`}
+      >
+        <div
+          className={`w-fit max-w-full break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed sm:px-4 sm:py-3 ${
+            isUser
+              ? "rounded-tr-sm bg-indigo-600 text-white"
+              : message.failed
+                ? "rounded-tl-sm border border-rose-500/30 bg-rose-500/10 text-rose-200"
+                : "rounded-tl-sm border border-slate-800 bg-slate-900 text-slate-200 shadow-sm"
+          }`}
+        >
+          {isUser ? (
+            <span className="whitespace-pre-wrap">{message.content}</span>
+          ) : (
+            <Markdown text={message.content} />
+          )}
+          {message.isStreaming && (
+            <span className="ml-1 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-indigo-400 align-middle" />
+          )}
         </div>
-      )}
+
+        {!isUser && !message.isStreaming && (
+          <div className="w-full space-y-2">
+            {message.citations && message.citations.length > 0 && (
+              <CitationsList citations={message.citations} />
+            )}
+
+            {!message.failed && (
+              <div className="flex items-center gap-1.5 pt-0.5 text-slate-500">
+                <span className="text-[10px]">Was this helpful?</span>
+                <button
+                  onClick={() => onFeedback(message.id, "up")}
+                  aria-label="Helpful"
+                  aria-pressed={rating === "up"}
+                  className={`rounded p-1.5 transition-colors hover:bg-slate-800 hover:text-slate-200 ${
+                    rating === "up" ? "bg-emerald-500/10 text-emerald-400" : ""
+                  }`}
+                >
+                  <ThumbsUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => onFeedback(message.id, "down")}
+                  aria-label="Not helpful"
+                  aria-pressed={rating === "down"}
+                  className={`rounded p-1.5 transition-colors hover:bg-slate-800 hover:text-slate-200 ${
+                    rating === "down" ? "bg-rose-500/10 text-rose-400" : ""
+                  }`}
+                >
+                  <ThumbsDown className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

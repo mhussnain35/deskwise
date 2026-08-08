@@ -1,26 +1,75 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  /* Narrow-phone breakpoint — below this, secondary labels and badges are
+     dropped rather than wrapped onto a second line. */
+  --breakpoint-xs: 420px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root {
+  --background: #020617; /* slate-950 — the app is dark in both schemes */
+  --foreground: #e2e8f0;
+}
+
+html {
+  /* Prevent iOS from enlarging text when the device is rotated. */
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* The chat pane owns scrolling; stop the page itself rubber-banding on iOS. */
+  overscroll-behavior-y: none;
+}
+
+/* Remove the grey flash when tapping controls on Android Chrome. */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Slim scrollbars that match the dark surface, on the platforms that allow it. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1e293b transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: #1e293b;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: #334155;
+}
+
+/* Visible focus ring for keyboard users, suppressed for pointer interaction. */
+:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
