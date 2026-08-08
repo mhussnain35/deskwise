@@ -62,7 +62,7 @@ User Upload
 | **Admin Panel** | Upload KB docs, view chunk metrics and usage analytics, trigger re-indexing at `/admin` — writes gated by `ADMIN_TOKEN` |
 | **Usage Analytics** | Most-asked questions, thumbs-down rate, escalation tickets and upload volume, aggregated from Neon |
 | **Rate Limiting** | Sliding-window per-session limiter (10 req/60s) with friendly UI error |
-| **Cold-Start Overlay** | Branded loading screen during Neon autosuspend wake-up |
+| **Cold-Start Skeleton** | Loading state shaped like the chat itself (header, message rows, composer) so nothing jumps when content arrives; status copy escalates to "waking up the database" if Neon is autosuspended, via `role="status"` for screen readers. Also wired to Next.js `loading.tsx` for both routes |
 | **Evaluation Harness** | 25-case benchmark measuring confidence accuracy and fallback precision |
 
 ---
@@ -161,6 +161,8 @@ deskwise/
 │   │       ├── analytics/route.ts   # Usage aggregates for the dashboard
 │   │       └── reindex/route.ts     # Trigger full re-indexing
 │   ├── admin/page.tsx               # Admin dashboard UI
+│   ├── admin/loading.tsx            # Route-level loading skeleton for /admin
+│   ├── loading.tsx                  # Route-level loading skeleton for the chat
 │   ├── page.tsx                     # Chat interface page
 │   └── layout.tsx                   # Root layout + SEO metadata + viewport
 ├── components/
@@ -169,6 +171,7 @@ deskwise/
 │       ├── document-panel.tsx       # Upload/link manager (bottom sheet / side drawer)
 │       ├── use-documents.ts         # Upload, import-by-link, list and delete hook
 │       ├── use-visual-viewport.ts   # Keeps the composer above the mobile keyboard
+│       ├── loading-screen.tsx       # Cold-start skeleton + escalating status copy
 │       ├── citations.tsx            # Expandable source panel
 │       ├── markdown.tsx             # Streaming-safe markdown renderer
 │       └── types.ts                 # Shared chat types

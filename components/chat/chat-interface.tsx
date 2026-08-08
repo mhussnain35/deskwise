@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { CitationsList } from "./citations";
 import { DocumentPanel, UPLOAD_ACCEPT } from "./document-panel";
+import { ChatLoadingScreen } from "./loading-screen";
 import { Markdown } from "./markdown";
 import { useDocuments } from "./use-documents";
 import { useVisualViewport } from "./use-visual-viewport";
@@ -33,11 +34,15 @@ const SHELL_STYLE: React.CSSProperties = {
   transform: "translateY(var(--viewport-offset, 0px))",
 };
 
+/**
+ * Kept short enough to sit on a single line at 375px — a suggestion that wraps
+ * to two lines reads as a paragraph rather than a tappable prompt.
+ */
 const SAMPLE_PROMPTS = [
-  "How do I upgrade my subscription plan?",
-  "What is your refund policy for unused months?",
-  "Why did my credit card payment fail?",
-  "How do I request a tax invoice?",
+  "How do I upgrade my plan?",
+  "What's your refund policy?",
+  "Why did my payment fail?",
+  "How do I get a tax invoice?",
 ];
 
 const SESSION_STORAGE_KEY = "deskwise_session_id";
@@ -317,20 +322,9 @@ export default function ChatInterface() {
     );
   };
 
-  // Show cold-start initializing overlay
+  // Cold-start: skeleton of this same layout while history loads.
   if (isInitializing) {
-    return (
-      <div
-        style={SHELL_STYLE}
-        className="fixed inset-x-0 top-0 flex w-full flex-col items-center justify-center gap-4 bg-slate-950 px-6 text-center font-sans text-slate-100"
-      >
-        <div className="flex h-12 w-12 animate-pulse items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 shadow-lg">
-          <Bot className="h-6 w-6 text-white" />
-        </div>
-        <p className="text-sm text-slate-400">Connecting to Deskwise…</p>
-        <p className="text-xs text-slate-600">Warming up database connection</p>
-      </div>
-    );
+    return <ChatLoadingScreen />;
   }
 
   return (
@@ -446,63 +440,65 @@ export default function ChatInterface() {
           </button>
         )}
 
+        {/* Standard messenger composer: a rounded input holding the attach
+            control, with the send action as a separate circular button. */}
         <form
           onSubmit={(e) => {
             e.preventDefault();
             handleSendMessage();
           }}
-          className="flex items-end gap-2 rounded-2xl border border-slate-800 bg-slate-950 p-1.5 transition-colors focus-within:border-indigo-500/60 focus-within:ring-2 focus-within:ring-indigo-500/20"
+          className="flex items-end gap-2"
         >
-          <button
-            type="button"
-            onClick={() => composerFileRef.current?.click()}
-            aria-label="Attach a document"
-            title="Attach a document to ask questions about"
-            className="shrink-0 rounded-xl p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-indigo-300"
-          >
-            <Paperclip className="h-5 w-5" />
-          </button>
+          <div className="flex min-w-0 flex-1 items-end rounded-3xl border border-slate-800 bg-slate-950 pl-1 pr-2 transition-colors focus-within:border-indigo-500/60">
+            <button
+              type="button"
+              onClick={() => composerFileRef.current?.click()}
+              aria-label="Attach a document"
+              title="Attach a document to ask questions about"
+              className="shrink-0 rounded-full p-2.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-indigo-300 active:bg-slate-800"
+            >
+              <Paperclip className="h-5 w-5" />
+            </button>
 
-          <input
-            ref={composerFileRef}
-            type="file"
-            accept={UPLOAD_ACCEPT}
-            multiple
-            className="hidden"
-            onChange={(event) => handleComposerFiles(event.target.files)}
-          />
+            <input
+              ref={composerFileRef}
+              type="file"
+              accept={UPLOAD_ACCEPT}
+              multiple
+              className="hidden"
+              onChange={(event) => handleComposerFiles(event.target.files)}
+            />
 
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={handleComposerFocus}
-            placeholder={
-              documents.length > 0
-                ? "Ask about your documents, or paste a link…"
-                : "Ask a question, or paste a document link…"
-            }
-            rows={1}
-            disabled={isLoading}
-            aria-label="Message"
-            /* 16px base font size keeps iOS Safari from zooming on focus. */
-            className="max-h-40 min-h-[2.75rem] flex-1 resize-none bg-transparent py-2.5 text-base text-slate-100 placeholder-slate-500 outline-none disabled:opacity-50 sm:text-sm"
-          />
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onFocus={handleComposerFocus}
+              placeholder={documents.length > 0 ? "Ask about your documents…" : "Message Deskwise…"}
+              rows={1}
+              disabled={isLoading}
+              aria-label="Message"
+              /* 16px base font size keeps iOS Safari from zooming on focus. */
+              className="max-h-32 min-h-[2.75rem] flex-1 resize-none bg-transparent py-3 text-base leading-5 text-slate-100 placeholder-slate-500 outline-none disabled:opacity-50 sm:text-sm sm:leading-5"
+            />
+          </div>
 
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
             aria-label="Send message"
-            className="shrink-0 rounded-xl bg-indigo-600 p-2.5 text-white shadow-md shadow-indigo-600/20 transition-all hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:shadow-none"
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-indigo-600 text-white shadow-md shadow-indigo-600/20 transition-colors hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:shadow-none"
           >
-            <Send className="h-5 w-5" />
+            <Send className="h-[18px] w-[18px]" />
           </button>
         </form>
 
-        <div className="mt-2 flex items-center justify-between gap-3 px-1 text-[10px] text-slate-500 sm:text-[11px]">
+        {/* Provider/limit detail is desk-side context, not something a phone
+            keyboard should be competing with for vertical space. */}
+        <div className="mt-2 hidden items-center justify-between gap-3 px-1 text-[11px] text-slate-500 sm:flex">
           <span className="truncate">Gemini 2.0 Flash · hybrid retrieval</span>
-          <span className="hidden shrink-0 text-slate-600 xs:inline">10 msg/min per session</span>
+          <span className="shrink-0 text-slate-600">10 msg/min per session</span>
         </div>
       </footer>
 
@@ -572,9 +568,11 @@ function EmptyState({
           <button
             key={prompt}
             onClick={() => onPrompt(prompt)}
-            className="group flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-left text-xs text-slate-300 transition-all duration-150 hover:border-indigo-500/30 hover:bg-indigo-950/40 hover:text-indigo-200 sm:text-sm"
+            title={prompt}
+            className="group flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-left text-sm text-slate-300 transition-all duration-150 hover:border-indigo-500/30 hover:bg-indigo-950/40 hover:text-indigo-200"
           >
-            <span>{prompt}</span>
+            {/* One line per suggestion — truncated rather than wrapped. */}
+            <span className="truncate whitespace-nowrap">{prompt}</span>
             <Send className="h-3.5 w-3.5 shrink-0 text-slate-600 transition-colors group-hover:text-indigo-400" />
           </button>
         ))}
