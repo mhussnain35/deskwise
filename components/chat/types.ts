@@ -29,6 +29,8 @@ export interface UserDocument {
   sizeBytes: number;
   chunkCount: number;
   uploadedAt: string;
+  /** Original link, when the document was imported from a URL. */
+  sourceUrl?: string | null;
 }
 
 export interface UploadLimits {

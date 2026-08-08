@@ -17,6 +17,7 @@ import { db } from "../db";
 import { docs, docChunks } from "../db/schema";
 import { embedTexts } from "../ai/embeddings";
 import { chunkDocument } from "./chunker";
+import { fetchRemoteDocument } from "./fetch-url";
 import { parseDocument, extensionOf } from "./parsers";
 import { cosineSimilarity, compactVector } from "./vector";
 
@@ -47,6 +48,8 @@ export interface UserDocument {
   sizeBytes: number;
   chunkCount: number;
   uploadedAt: string;
+  /** Original link, when the document was imported from a URL. */
+  sourceUrl?: string | null;
 }
 
 function requireDb() {
@@ -102,6 +105,7 @@ export async function listUserDocuments(sessionId: string): Promise<UserDocument
     sizeBytes: row.sizeBytes || 0,
     chunkCount: row.chunkCount,
     uploadedAt: row.uploadedAt.toISOString(),
+    sourceUrl: row.sourceUrl,
   }));
 }
 
@@ -125,9 +129,11 @@ export async function ingestUserDocument(params: {
   sessionId: string;
   filename: string;
   buffer: Buffer;
+  /** Set when the document came from a link rather than a file picker. */
+  sourceUrl?: string | null;
 }): Promise<UserDocument> {
   const database = requireDb();
-  const { sessionId, buffer } = params;
+  const { sessionId, buffer, sourceUrl = null } = params;
   const filename = safeFilename(params.filename);
 
   if (buffer.byteLength === 0) {
@@ -182,7 +188,7 @@ export async function ingestUserDocument(params: {
       chunkCount: chunks.length,
       scope: "user",
       sessionId,
-      sourceUrl: null,
+      sourceUrl,
     })
     .returning();
 
@@ -209,7 +215,40 @@ export async function ingestUserDocument(params: {
     sizeBytes: buffer.byteLength,
     chunkCount: chunks.length,
     uploadedAt: inserted.uploadedAt.toISOString(),
+    sourceUrl,
   };
+}
+
+/**
+ * Import a document from a public link.
+ *
+ * The download is deliberately done before the quota check is repeated inside
+ * ingestUserDocument, so an over-limit session still pays only one request —
+ * and the SSRF/size guards in fetchRemoteDocument run before any of this
+ * session's data is touched.
+ */
+export async function ingestUserDocumentFromUrl(params: {
+  sessionId: string;
+  url: string;
+}): Promise<UserDocument> {
+  const { sessionId, url } = params;
+
+  const existingCount = await countUserDocuments(sessionId);
+  if (existingCount >= UPLOAD_LIMITS.maxDocsPerSession) {
+    throw new UploadError(
+      `You can keep ${UPLOAD_LIMITS.maxDocsPerSession} documents at a time. Remove one before adding another.`,
+      409
+    );
+  }
+
+  const fetched = await fetchRemoteDocument(url);
+
+  return ingestUserDocument({
+    sessionId,
+    filename: fetched.filename,
+    buffer: fetched.buffer,
+    sourceUrl: fetched.url,
+  });
 }
 
 export interface UserChunkMatch {

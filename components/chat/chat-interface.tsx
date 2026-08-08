@@ -20,7 +20,18 @@ import { CitationsList } from "./citations";
 import { DocumentPanel, UPLOAD_ACCEPT } from "./document-panel";
 import { Markdown } from "./markdown";
 import { useDocuments } from "./use-documents";
+import { useVisualViewport } from "./use-visual-viewport";
 import type { Citation, Message } from "./types";
+
+/**
+ * The chat shell is sized to the visible viewport, not the layout viewport, so
+ * the composer sits directly above the on-screen keyboard instead of behind it.
+ * `--app-height` / `--viewport-offset` are published by useVisualViewport.
+ */
+const SHELL_STYLE: React.CSSProperties = {
+  height: "var(--app-height, 100dvh)",
+  transform: "translateY(var(--viewport-offset, 0px))",
+};
 
 const SAMPLE_PROMPTS = [
   "How do I upgrade my subscription plan?",
@@ -30,6 +41,9 @@ const SAMPLE_PROMPTS = [
 ];
 
 const SESSION_STORAGE_KEY = "deskwise_session_id";
+
+/** A message consisting solely of a link — treated as "import this document". */
+const BARE_URL = /^https?:\/\/[^\s]+$/i;
 
 function newSessionId(): string {
   return "session_" + Math.random().toString(36).substring(2, 9);
@@ -53,7 +67,9 @@ export default function ChatInterface() {
   const dragDepth = useRef(0);
 
   const documentsState = useDocuments(sessionId);
-  const { documents, upload, uploadingName } = documentsState;
+  const { documents, upload, importUrl, uploadingName } = documentsState;
+
+  useVisualViewport();
 
   /** Client-side key for a message until the server hands back its database id. */
   const nextLocalId = () => `local_${localIdCounter.current++}`;
@@ -107,6 +123,15 @@ export default function ChatInterface() {
   const handleSendMessage = async (textToSend?: string) => {
     const query = (textToSend || input).trim();
     if (!query || isLoading) return;
+
+    // A message that is nothing but a link is a request to import that document
+    // — the agent can't browse, so answering it as a question is useless.
+    if (BARE_URL.test(query)) {
+      setInput("");
+      setIsPanelOpen(true);
+      await importUrl(query);
+      return;
+    }
 
     const userMsg: Message = { id: nextLocalId(), role: "user", content: query };
 
@@ -284,10 +309,21 @@ export default function ChatInterface() {
     }
   };
 
+  /** Keep the latest turn visible when the keyboard pushes the view up. */
+  const handleComposerFocus = () => {
+    window.setTimeout(
+      () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }),
+      250
+    );
+  };
+
   // Show cold-start initializing overlay
   if (isInitializing) {
     return (
-      <div className="flex h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-slate-950 px-6 text-center font-sans text-slate-100">
+      <div
+        style={SHELL_STYLE}
+        className="fixed inset-x-0 top-0 flex w-full flex-col items-center justify-center gap-4 bg-slate-950 px-6 text-center font-sans text-slate-100"
+      >
         <div className="flex h-12 w-12 animate-pulse items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 shadow-lg">
           <Bot className="h-6 w-6 text-white" />
         </div>
@@ -303,7 +339,8 @@ export default function ChatInterface() {
       onDragOver={(event) => event.preventDefault()}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="relative mx-auto flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden bg-slate-950 font-sans text-slate-100 shadow-2xl sm:border-x sm:border-slate-800/60"
+      style={SHELL_STYLE}
+      className="fixed inset-x-0 top-0 mx-auto flex w-full max-w-5xl flex-col overflow-hidden bg-slate-950 font-sans text-slate-100 shadow-2xl sm:border-x sm:border-slate-800/60"
     >
       {/* Header */}
       <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-900/70 px-3 py-2.5 backdrop-blur-md sm:px-6 sm:py-4">
@@ -362,7 +399,7 @@ export default function ChatInterface() {
       </header>
 
       {/* Messages */}
-      <main className="flex-1 space-y-5 overflow-y-auto overscroll-contain px-3 py-5 sm:space-y-6 sm:px-6 sm:py-6">
+      <main className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-3 py-5 sm:space-y-6 sm:px-6 sm:py-6">
         {messages.length === 0 ? (
           <EmptyState
             onPrompt={(prompt) => handleSendMessage(prompt)}
@@ -382,8 +419,9 @@ export default function ChatInterface() {
         <div ref={messagesEndRef} />
       </main>
 
-      {/* Composer */}
-      <footer className="border-t border-slate-800/80 bg-slate-900/80 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-md sm:px-6 sm:pb-5 sm:pt-4">
+      {/* Composer — last child of the viewport-height column, so it sits flush
+          against the bottom of the visible area (above the keyboard on mobile). */}
+      <footer className="shrink-0 border-t border-slate-800/80 bg-slate-900/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-md sm:px-6 sm:pb-5 sm:pt-4">
         {rateLimitMsg && (
           <div className="mb-2.5 flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-300">
             <span className="shrink-0 text-amber-400">⚠️</span>
@@ -439,10 +477,11 @@ export default function ChatInterface() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onFocus={handleComposerFocus}
             placeholder={
               documents.length > 0
-                ? "Ask about your documents or billing…"
-                : "Ask about plans, billing, or refunds…"
+                ? "Ask about your documents, or paste a link…"
+                : "Ask a question, or paste a document link…"
             }
             rows={1}
             disabled={isLoading}
@@ -473,7 +512,7 @@ export default function ChatInterface() {
           <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-indigo-400 px-8 py-10">
             <UploadCloud className="h-10 w-10 text-indigo-400" />
             <p className="text-sm font-medium text-white">Drop your document to ask about it</p>
-            <p className="text-xs text-slate-400">PDF, DOCX, Markdown, TXT, CSV or JSON</p>
+            <p className="text-xs text-slate-400">PDF, DOCX, Markdown, TXT, CSV, JSON or HTML</p>
           </div>
         </div>
       )}
@@ -522,7 +561,7 @@ function EmptyState({
         <UploadCloud className="h-4 w-4" />
         {documentCount > 0
           ? `${documentCount} document${documentCount === 1 ? "" : "s"} attached — manage`
-          : "Upload a document"}
+          : "Upload a document or paste a link"}
       </button>
 
       <div className="w-full space-y-2">

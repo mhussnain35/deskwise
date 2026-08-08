@@ -5,6 +5,7 @@ import {
   AlertCircle,
   CheckCircle2,
   FileText,
+  Link as LinkIcon,
   Loader2,
   Trash2,
   UploadCloud,
@@ -13,8 +14,10 @@ import {
 import { formatBytes, formatRelativeTime } from "@/lib/format";
 import type { DocumentsState } from "./use-documents";
 
+// Mirrors UPLOAD_ACCEPT in lib/rag/parsers.ts. Kept as its own constant so the
+// client bundle doesn't pull in the parsing module and its PDF/DOCX imports.
 export const UPLOAD_ACCEPT =
-  ".pdf,.docx,.md,.markdown,.txt,.csv,.json,application/pdf,text/markdown,text/plain,text/csv,application/json";
+  ".pdf,.docx,.md,.markdown,.txt,.csv,.json,.html,.htm,application/pdf,text/markdown,text/plain,text/csv,application/json,text/html";
 
 interface DocumentPanelProps {
   open: boolean;
@@ -30,11 +33,21 @@ interface DocumentPanelProps {
  * breakpoint up.
  */
 export function DocumentPanel({ open, onClose, state }: DocumentPanelProps) {
-  const { documents, limits, isLoading, uploadingName, error, notice, upload, remove } = state;
+  const { documents, limits, isLoading, uploadingName, error, notice, upload, importUrl, remove } =
+    state;
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [linkValue, setLinkValue] = useState("");
 
   const atCapacity = documents.length >= limits.maxDocs;
+  const isBusy = Boolean(uploadingName);
+
+  const handleLinkSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!linkValue.trim() || atCapacity || isBusy) return;
+    const added = await importUrl(linkValue);
+    if (added) setLinkValue("");
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -53,7 +66,12 @@ export function DocumentPanel({ open, onClose, state }: DocumentPanelProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex sm:justify-end">
+    <div
+      // Matches the chat shell: sized to the visible viewport so the sheet and
+      // its inputs stay above the keyboard rather than under it.
+      style={{ height: "var(--app-height, 100dvh)", transform: "translateY(var(--viewport-offset, 0px))" }}
+      className="fixed inset-x-0 top-0 z-50 flex sm:justify-end"
+    >
       <button
         aria-label="Close documents panel"
         onClick={onClose}
@@ -131,7 +149,7 @@ export function DocumentPanel({ open, onClose, state }: DocumentPanelProps) {
             )}
 
             <p className="mt-2 text-[11px] text-slate-500">
-              PDF, DOCX, Markdown, TXT, CSV or JSON · up to {limits.maxFileMb} MB ·{" "}
+              PDF, DOCX, Markdown, TXT, CSV, JSON or HTML · up to {limits.maxFileMb} MB ·{" "}
               {documents.length}/{limits.maxDocs} used
             </p>
 
@@ -144,6 +162,41 @@ export function DocumentPanel({ open, onClose, state }: DocumentPanelProps) {
               onChange={(event) => handleFiles(event.target.files)}
             />
           </div>
+
+          {/* Import by link */}
+          <form onSubmit={handleLinkSubmit} className="space-y-1.5">
+            <label
+              htmlFor="document-link"
+              className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500"
+            >
+              <LinkIcon className="h-3 w-3" /> Or paste a document link
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="document-link"
+                type="url"
+                inputMode="url"
+                autoComplete="off"
+                spellCheck={false}
+                value={linkValue}
+                onChange={(event) => setLinkValue(event.target.value)}
+                disabled={atCapacity || isBusy}
+                placeholder="https://example.com/handbook.pdf"
+                /* 16px on mobile so focusing the field doesn't zoom the page. */
+                className="min-w-0 flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-base text-slate-100 placeholder-slate-600 outline-none transition-colors focus:border-indigo-500/60 disabled:opacity-50 sm:text-xs"
+              />
+              <button
+                type="submit"
+                disabled={!linkValue.trim() || atCapacity || isBusy}
+                className="shrink-0 rounded-xl bg-slate-800 px-3.5 py-2.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:opacity-40"
+              >
+                Import
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Public links only — the file is downloaded once and indexed like an upload.
+            </p>
+          </form>
 
           {uploadingName && (
             <p className="flex items-center gap-2 rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-300">
@@ -193,6 +246,17 @@ export function DocumentPanel({ open, onClose, state }: DocumentPanelProps) {
                       {formatBytes(doc.sizeBytes)} · {doc.chunkCount} section
                       {doc.chunkCount === 1 ? "" : "s"} · {formatRelativeTime(doc.uploadedAt)}
                     </p>
+                    {doc.sourceUrl && (
+                      <a
+                        href={doc.sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer nofollow"
+                        className="mt-1 flex items-center gap-1 truncate text-[11px] text-indigo-400 hover:text-indigo-300"
+                      >
+                        <LinkIcon className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{doc.sourceUrl}</span>
+                      </a>
+                    )}
                   </div>
 
                   <button

@@ -3,9 +3,11 @@ import {
   UPLOAD_LIMITS,
   UploadError,
   ingestUserDocument,
+  ingestUserDocumentFromUrl,
   listUserDocuments,
 } from "@/lib/rag/user-docs";
 import { SUPPORTED_LABEL, UnsupportedFileError, isSupportedFile } from "@/lib/rag/parsers";
+import { UrlFetchError } from "@/lib/rag/fetch-url";
 import { checkUploadRateLimit } from "@/lib/rate-limit";
 import { isValidSessionId } from "@/lib/session";
 import { UpstreamError, logUpstream, toUpstreamError } from "@/lib/errors";
@@ -39,14 +41,24 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** POST /api/documents — multipart upload of one file for a session. */
+/**
+ * POST /api/documents
+ *
+ * Two shapes:
+ *   multipart/form-data  → { sessionId, file }  a file from the picker or a drop
+ *   application/json     → { sessionId, url }   a link to a public document
+ */
 export async function POST(req: NextRequest) {
+  if (req.headers.get("content-type")?.includes("application/json")) {
+    return handleUrlImport(req);
+  }
+
   let form: FormData;
   try {
     form = await req.formData();
   } catch {
     return NextResponse.json(
-      { error: "Upload must be sent as multipart/form-data." },
+      { error: "Upload must be sent as multipart/form-data, or JSON with a url." },
       { status: 400 }
     );
   }
@@ -126,6 +138,78 @@ export async function POST(req: NextRequest) {
           error instanceof Error && error.message
             ? error.message
             : "That file could not be processed. Please try a different one.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/** Import a document from a link the user pasted. */
+async function handleUrlImport(req: NextRequest) {
+  let payload: { sessionId?: unknown; url?: unknown };
+  try {
+    payload = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+  }
+
+  const sessionId = String(payload.sessionId || "");
+  const url = typeof payload.url === "string" ? payload.url.trim() : "";
+
+  if (!isValidSessionId(sessionId)) {
+    return NextResponse.json({ error: "A valid sessionId is required." }, { status: 400 });
+  }
+
+  if (!url) {
+    return NextResponse.json({ error: "Paste a link to a document." }, { status: 400 });
+  }
+
+  // Fetching an arbitrary URL costs a network round trip before any embedding,
+  // so it shares the upload budget rather than getting a free path.
+  const rl = checkUploadRateLimit(sessionId);
+  if (!rl.allowed) {
+    const retryAfter = Math.ceil(rl.resetMs / 1000);
+    return NextResponse.json(
+      {
+        error: `That's a lot of imports at once. Please wait ${retryAfter} seconds and try again.`,
+        retryAfterMs: rl.resetMs,
+      },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } }
+    );
+  }
+
+  try {
+    const document = await ingestUserDocumentFromUrl({ sessionId, url });
+
+    return NextResponse.json({
+      success: true,
+      document,
+      message: `"${document.title}" was imported — ${document.chunkCount} searchable section${
+        document.chunkCount === 1 ? "" : "s"
+      }.`,
+    });
+  } catch (error) {
+    if (error instanceof UrlFetchError || error instanceof UploadError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    if (error instanceof UnsupportedFileError) {
+      return NextResponse.json({ error: error.message }, { status: 415 });
+    }
+
+    const upstream = error instanceof UpstreamError ? error : maybeUpstream(error);
+    if (upstream) {
+      logUpstream("Documents API] Embedding URL import", upstream);
+      return NextResponse.json({ error: upstream.publicMessage }, { status: upstream.status });
+    }
+
+    console.error("[Documents API] URL import failed:", error);
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error && error.message
+            ? error.message
+            : "That link could not be imported. Try downloading the file and uploading it.",
       },
       { status: 500 }
     );

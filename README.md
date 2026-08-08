@@ -31,8 +31,10 @@ User Question
         └─► Persist to Neon        (conversations, messages, cited_chunk_ids, feedback)
 
 User Upload
-  └─► POST /api/documents        (multipart — PDF, DOCX, MD, TXT, CSV, JSON)
-        ├─► Parse                (unpdf per page / mammoth / structured text)
+  └─► POST /api/documents
+        ├─► multipart            (file picker, drag-and-drop)
+        ├─► or JSON { url }      (pasted link — SSRF-guarded server-side fetch)
+        ├─► Parse                (unpdf per page / mammoth / html strip / structured text)
         ├─► Chunk                (headings when present, else paragraph packing + overlap)
         ├─► Embed                (batched, concurrency 4)
         └─► Store in Neon        (chunk text + vector, scoped to session_id)
@@ -45,7 +47,8 @@ User Upload
 | Feature | Description |
 |---|---|
 | **Streaming RAG Chat** | Token-by-token streamed answers grounded in retrieved documentation |
-| **User Document Upload** | Attach a PDF, DOCX, Markdown, TXT, CSV or JSON file from the chat and ask questions about it. Parsed, chunked, embedded and queryable on the next message — private to that session |
+| **User Document Upload** | Attach a PDF, DOCX, Markdown, TXT, CSV, JSON or HTML file from the chat and ask questions about it. Parsed, chunked, embedded and queryable on the next message — private to that session |
+| **Import by Link** | Paste a document URL in the panel — or straight into the chat box — and the server fetches, parses and indexes it. Hardened against SSRF: scheme allowlist, per-hop DNS/range checks, manual redirect following, size and time caps |
 | **Source Citations** | Expandable panel showing the section(s) used, with match scores and a badge marking answers grounded in your own upload |
 | **Confidence Guardrail** | Out-of-scope queries return a structured human escalation message and log a ticket — no hallucinations |
 | **Multi-turn Context** | The last six turns are replayed, so follow-up questions and pronouns resolve |
@@ -53,6 +56,7 @@ User Upload
 | **Semantic Chunking** | Markdown split on heading boundaries; unstructured uploads packed on paragraph boundaries with overlap |
 | **Vector Search** | Qdrant Cloud dense search with local cosine similarity fallback for dev/offline |
 | **Responsive UI** | Mobile-first chat — bottom-sheet document manager, auto-growing composer, safe-area insets, drag-and-drop upload on desktop |
+| **Keyboard-aware Composer** | The input bar tracks the VisualViewport, so it sits directly above the on-screen keyboard instead of behind it — `100dvh` alone can't do this on iOS |
 | **Feedback Loop** | Thumbs up/down per answer persisted to Neon Postgres |
 | **Session History** | Conversations survive page reload via Neon-backed session storage |
 | **Admin Panel** | Upload KB docs, view chunk metrics and usage analytics, trigger re-indexing at `/admin` — writes gated by `ADMIN_TOKEN` |
@@ -109,7 +113,15 @@ Embeddings are strong on paraphrase and weak on exact tokens: plan names, error 
 
 Candidates from both arms are rescored with BM25 over the pooled set and blended as `α·dense + (1-α)·keyword`. Sparse-only hits have their stored vector pulled back from Qdrant so they enter fusion with a real dense score rather than a zero they could never recover from. **The confidence guardrail still reads the dense score alone** — keyword overlap is a weak signal of "we actually know this", and an out-of-scope question that happens to share one word with a policy would otherwise sail past the threshold.
 
-**6. Kept user uploads out of the vector database, in Postgres with their vectors inline.**
+**6. Treated "import from a link" as an SSRF surface, not a convenience feature.**
+
+Fetching a URL the user chose means the *server's* network position is used, not theirs — the textbook path to `http://169.254.169.254/` (cloud metadata), an internal database port, or the app's own admin endpoints on localhost. The importer applies a scheme allowlist, resolves each host and rejects loopback/private/link-local/CGNAT/multicast ranges, follows redirects **manually** so every hop is revalidated (a public host is free to redirect to 127.0.0.1), and caps size, time and redirect count. Rejected attempts still consume the upload budget, so the endpoint can't be used as a port scanner.
+
+The check operates on the *parsed* hostname, which matters more than it looks: WHATWG URL parsing rewrites `::ffff:127.0.0.1` to `::ffff:7f00:1`, `127.1` to `127.0.0.1` and `2130706433` to `127.0.0.1`. A first cut of this code pattern-matched the mapped-IPv4 text form and let `http://[::ffff:127.0.0.1]/` straight through to the loopback interface; the guard now reconstructs the embedded address from parsed IPv6 groups. `scripts/ssrf-check.ts` asserts all 22 cases, and is the thing to extend before touching that file.
+
+Stated plainly: a DNS-rebinding window remains between the lookup and the connection. Closing it needs an agent that pins the checked address; at this scale the range checks plus the response cap are the proportionate control, and a deployment taking untrusted traffic should put an egress proxy in front.
+
+**7. Kept user uploads out of the vector database, in Postgres with their vectors inline.**
 
 Uploads are session-scoped and disposable; the knowledge base is shared and curated. Writing per-visitor chunks into the shared Qdrant collection would mix the two, and nothing would ever clean them up. Writing them to `/kb-docs` is not an option either — serverless filesystems are read-only, and a visitor's file must not become what every other visitor is answered from.
 
@@ -154,8 +166,9 @@ deskwise/
 ├── components/
 │   └── chat/
 │       ├── chat-interface.tsx       # Responsive streaming chat shell
-│       ├── document-panel.tsx       # Upload manager (bottom sheet / side drawer)
-│       ├── use-documents.ts         # Upload, list and delete hook
+│       ├── document-panel.tsx       # Upload/link manager (bottom sheet / side drawer)
+│       ├── use-documents.ts         # Upload, import-by-link, list and delete hook
+│       ├── use-visual-viewport.ts   # Keeps the composer above the mobile keyboard
 │       ├── citations.tsx            # Expandable source panel
 │       ├── markdown.tsx             # Streaming-safe markdown renderer
 │       └── types.ts                 # Shared chat types
@@ -169,7 +182,8 @@ deskwise/
 │   ├── qdrant/client.ts             # Qdrant Cloud client + collection bootstrap
 │   ├── rag/
 │   │   ├── chunker.ts               # Heading-based + paragraph-packing chunkers
-│   │   ├── parsers.ts               # PDF / DOCX / CSV / JSON / text extraction
+│   │   ├── parsers.ts               # PDF / DOCX / HTML / CSV / JSON / text extraction
+│   │   ├── fetch-url.ts             # SSRF-guarded document download for link imports
 │   │   ├── keyword.ts               # BM25 sparse scoring + hybrid fusion
 │   │   ├── user-docs.ts             # Session-scoped upload store and search
 │   │   ├── vector.ts                # Cosine similarity + vector compaction
@@ -186,6 +200,7 @@ deskwise/
 │   ├── eval-dataset.ts              # 25 benchmark Q&A test cases
 │   ├── eval.ts                      # Evaluation harness — outputs eval-results.md
 │   ├── search-test.ts               # CLI retrieval probe (accepts a session id)
+│   ├── ssrf-check.ts                # Asserts the link importer's address guard
 │   ├── cleanup-session.ts           # Wipe one session's uploads, chat and tickets
 │   └── load-env.ts                  # Loads .env.local for standalone scripts
 └── drizzle/                         # Generated SQL migrations
@@ -248,7 +263,8 @@ Open [http://localhost:3000](http://localhost:3000) for the chat UI, [http://loc
 ### Asking questions about your own documents
 
 1. In the chat, tap the **paperclip** in the composer, use **Documents** in the header, or drag a file anywhere onto the window.
-2. Supported formats: **PDF, DOCX, Markdown, TXT, CSV, JSON** — up to 8 MB, 5 documents per session.
+   Or add one by link: paste a URL into **Or paste a document link** in the Documents panel — or just paste the link into the chat box and send it, which imports rather than asking a pointless question the agent can't browse for.
+2. Supported formats: **PDF, DOCX, Markdown, TXT, CSV, JSON, HTML** — up to 8 MB, 5 documents per session.
 3. The file is parsed, chunked, embedded and stored against your session id. Ask your next question and it is searched alongside the company knowledge base — citations from your file are badged **Your upload**.
 4. Remove a document at any time from the Documents panel; its chunks are deleted with it, and anything left behind is swept after 7 days.
 
@@ -297,6 +313,7 @@ These are stated explicitly and by design — this is a portfolio/demo project, 
 | **Admin uploads are local-only** | Serverless filesystems are read-only, so uploading through `/admin` on Vercel returns a clear 503. Commit new docs to `kb-docs/` and redeploy, or run the panel locally. *End-user uploads are unaffected* — they go to Postgres, not the filesystem. |
 | **Upload quotas** | 5 documents per session, 8 MB per file, first 40 chunks indexed, swept after 7 days. Deliberate ceilings so a demo can't exhaust the Neon or Gemini free tier. |
 | **No OCR** | Scanned/image-only PDFs have no text layer; the upload is rejected with an explanation rather than silently indexing nothing. |
+| **Link import fetches once, without JS** | The importer downloads the URL as-is. A page that renders its text client-side, or one behind a login or a bot check, arrives empty and is rejected — download it and upload the file instead. DNS-rebinding is not mitigated; see decision 6. |
 | **Uploads aren't in Qdrant** | Session documents live only in Postgres. That keeps the shared collection clean, at the cost of a linear scan — fine at 200 chunks per session, not a design for thousands. |
 
 ---
