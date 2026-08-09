@@ -10,11 +10,12 @@ import { DeskwiseMark } from "@/components/brand/deskwise-logo";
  * Held for a fixed minimum (SPLASH_DURATION_MS) rather than only until data
  * arrives — a splash that flashes for 180ms on a warm load and two seconds on a
  * cold one reads as a glitch. A fixed floor makes the entrance the same every
- * time, and the progress bar is tied to that same duration so it always
- * completes exactly as the screen hands over.
+ * time.
  *
- * The chat's own skeleton takes over afterwards if data is *still* loading, so
- * this never becomes the screen a user is stuck staring at.
+ * The loading indicator is deliberately indeterminate, so it makes no claim
+ * about how much of that time is left. The chat's own skeleton takes over
+ * afterwards if data is *still* loading, so this never becomes the screen a
+ * user is stuck staring at.
  */
 export const SPLASH_DURATION_MS = 2500;
 
@@ -24,10 +25,7 @@ export function SplashScreen() {
       role="status"
       aria-live="polite"
       aria-label="Starting Deskwise"
-      style={{
-        height: "var(--app-height, 100dvh)",
-        ["--splash-duration" as string]: `${SPLASH_DURATION_MS}ms`,
-      }}
+      style={{ height: "var(--app-height, 100dvh)" }}
       className="fixed inset-x-0 top-0 z-50 flex w-full flex-col items-center justify-center gap-6 overflow-hidden bg-slate-950 px-6 font-sans text-slate-100"
     >
       {/* Ambient wash behind the mark */}
@@ -67,48 +65,50 @@ export function SplashScreen() {
 }
 
 /**
- * The circular mark with the load progress drawn as a ring around it.
+ * The circular mark with a loading arc travelling around it.
  *
- * The ring is an SVG stroke rather than a border, because only a stroke can be
- * drawn *partially*: `pathLength="100"` normalises the circumference to 100
- * units, so the dash offset animating 100 → 0 sweeps the ring from empty to
- * full regardless of its pixel radius.
+ * Indeterminate by design: the arc orbits continuously rather than filling the
+ * ring, because a bar that completes makes a promise about *when* — and the
+ * work behind this screen (history fetch, possible database wake-up) has no
+ * progress to report. A moving arc says "working" without lying about it.
+ *
+ * Rotation lives on a wrapping element, not on the SVG circle: CSS transforms
+ * on SVG children resolve against the user coordinate system, so rotating the
+ * circle itself would swing it around the viewBox origin rather than spinning
+ * in place.
  */
 function LogoWithProgressRing() {
   const gradientId = useId();
 
   return (
     <div className="relative grid h-[104px] w-[104px] place-items-center sm:h-[120px] sm:w-[120px]">
-      <svg
-        viewBox="0 0 100 100"
-        aria-hidden="true"
-        // Start the sweep at twelve o'clock instead of three.
-        className="absolute inset-0 h-full w-full -rotate-90"
-      >
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="100" y2="100">
-            <stop stopColor="#6366F1" />
-            <stop offset="0.55" stopColor="#A855F7" />
-            <stop offset="1" stopColor="#EC4899" />
-          </linearGradient>
-        </defs>
+      <div className="splash-orbit absolute inset-0">
+        <svg viewBox="0 0 100 100" aria-hidden="true" className="h-full w-full">
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="100" y2="100">
+              <stop stopColor="#6366F1" />
+              <stop offset="0.55" stopColor="#A855F7" />
+              <stop offset="1" stopColor="#EC4899" />
+            </linearGradient>
+          </defs>
 
-        {/* Track */}
-        <circle cx="50" cy="50" r="46" fill="none" stroke="#1E293B" strokeWidth="3.5" />
+          {/* Track */}
+          <circle cx="50" cy="50" r="46" fill="none" stroke="#1E293B" strokeWidth="3.5" />
 
-        {/* Progress sweep, completing as the splash hands over */}
-        <circle
-          className="splash-ring"
-          cx="50"
-          cy="50"
-          r="46"
-          fill="none"
-          stroke={`url(#${gradientId})`}
-          strokeWidth="3.5"
-          strokeLinecap="round"
-          pathLength="100"
-        />
-      </svg>
+          {/* Travelling arc */}
+          <circle
+            className="splash-arc"
+            cx="50"
+            cy="50"
+            r="46"
+            fill="none"
+            stroke={`url(#${gradientId})`}
+            strokeWidth="3.5"
+            strokeLinecap="round"
+            pathLength="100"
+          />
+        </svg>
+      </div>
 
       <DeskwiseMark shape="circle" className="h-16 w-16 drop-shadow-2xl sm:h-[72px] sm:w-[72px]" />
     </div>

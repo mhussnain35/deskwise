@@ -86,14 +86,31 @@ body {
   }
 }
 
-/* Sweeps the ring around the logo over the splash duration. The circle carries
-   pathLength="100", so the offset runs 100 → 0 whatever its pixel radius. */
-@keyframes deskwise-ring {
-  from {
-    stroke-dashoffset: 100;
-  }
+/* An arc travelling around the logo. Rotation is applied to a wrapping element
+   rather than the SVG circle itself — CSS transforms on SVG children resolve
+   against the user coordinate system, not the shape, so rotating the circle
+   would swing it around the viewBox origin instead of its own centre. */
+@keyframes deskwise-orbit {
   to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The arc lengthens and shortens as it travels, so the motion reads as alive
+   rather than as a rigid segment going round at a constant angle. The circle
+   carries pathLength="100", so these are percentages of the circumference. */
+@keyframes deskwise-arc {
+  0% {
+    stroke-dasharray: 10 90;
     stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 38 62;
+    stroke-dashoffset: -14;
+  }
+  100% {
+    stroke-dasharray: 10 90;
+    stroke-dashoffset: -100;
   }
 }
 
@@ -117,9 +134,13 @@ body {
   animation: deskwise-fade 700ms ease-out both;
 }
 
-.splash-ring {
-  stroke-dasharray: 100;
-  animation: deskwise-ring var(--splash-duration, 2500ms) cubic-bezier(0.4, 0, 0.2, 1) both;
+.splash-orbit {
+  animation: deskwise-orbit 1.4s linear infinite;
+}
+
+.splash-arc {
+  stroke-dasharray: 10 90;
+  animation: deskwise-arc 1.8s ease-in-out infinite;
 }
 
 .splash-glow {
