@@ -1,7 +1,5 @@
-import { ai } from "./gemini";
 import { openRouterError } from "./llm";
 import {
-  EMBEDDING_PROVIDER,
   OPENROUTER_BASE_URL,
   embeddingDimension,
   embeddingModel,
@@ -11,25 +9,12 @@ import {
 import { UpstreamError, toUpstreamError } from "../errors";
 
 // Model and width both come from the environment (see lib/ai/provider.ts).
-// Gemini's text-embedding-004 was retired and 404s, which is why the default
-// there is gemini-embedding-001 with the dimension requested explicitly: it
-// defaults to 3072, and the Qdrant collection is 768.
 export const EMBEDDING_MODEL = embeddingModel();
 export const VECTOR_DIMENSION = embeddingDimension();
-
-interface GeminiEmbedResponse {
-  embedding?: { values?: number[] };
-  embeddings?: { values?: number[] }[];
-}
 
 interface OpenAiEmbedResponse {
   data?: { embedding?: number[]; index?: number }[];
   error?: { message?: string };
-}
-
-/** True when no real key is configured — the whole app runs on mock vectors. */
-export function isMockEmbeddingMode(): boolean {
-  return isMockMode("embedding");
 }
 
 /**
@@ -43,39 +28,18 @@ export function isMockEmbeddingMode(): boolean {
  * everything with no error surfaced anywhere.
  */
 export async function embedText(text: string): Promise<number[]> {
-  if (isMockEmbeddingMode()) {
+  if (isMockMode()) {
     return generateMockEmbedding(text);
   }
 
-  const values =
-    EMBEDDING_PROVIDER === "openrouter"
-      ? await embedViaOpenRouter(text)
-      : await embedViaGemini(text);
+  const values = await embedViaOpenRouter(text);
 
   assertDimension(values.length);
 
   // Cosine similarity is scale-invariant, but normalising once here keeps the
-  // stored vectors unit-length so the dot product in the local index is the
-  // cosine directly — and truncated Gemini dimensions are not pre-normalised.
+  // stored vectors unit-length, so the dot product in the local index is the
+  // cosine directly — and truncated dimensions are not pre-normalised.
   return normalize(values);
-}
-
-async function embedViaGemini(text: string): Promise<number[]> {
-  try {
-    const response = (await ai.models.embedContent({
-      model: EMBEDDING_MODEL,
-      contents: text,
-      config: { outputDimensionality: VECTOR_DIMENSION },
-    })) as GeminiEmbedResponse;
-
-    const values = response.embedding?.values || response.embeddings?.[0]?.values;
-    if (!values || values.length === 0) {
-      throw new UpstreamError("The embedding service returned an empty vector.", 502);
-    }
-    return values;
-  } catch (err) {
-    throw toUpstreamError(err, "embedding");
-  }
 }
 
 async function embedViaOpenRouter(text: string): Promise<number[]> {
@@ -128,7 +92,7 @@ function assertDimension(actual: number): void {
   throw new UpstreamError(
     `Embedding model "${EMBEDDING_MODEL}" returned ${actual} dimensions but EMBEDDING_DIMENSION is ${VECTOR_DIMENSION}. ` +
       `Set EMBEDDING_DIMENSION=${actual} (or pick a model that supports ${VECTOR_DIMENSION}), ` +
-      `then recreate the Qdrant collection and re-run "npx tsx scripts/ingest.ts".`,
+      `recreate the Qdrant collection, then re-run "npx tsx scripts/ingest.ts" and "npx tsx scripts/reembed.ts".`,
     500
   );
 }
@@ -138,7 +102,7 @@ function assertDimension(actual: number): void {
  *
  * Uploaded documents produce tens of chunks at once. Embedding them one at a
  * time makes a 40-chunk PDF take most of a minute (and risks the serverless
- * timeout), while firing all of them in parallel trips the Gemini free-tier
+ * timeout), while firing all of them in parallel trips the provider free-tier
  * per-minute quota. Four at a time is the compromise.
  */
 export async function embedTexts(texts: string[], concurrency = 4): Promise<number[][]> {

@@ -4,11 +4,11 @@
 
 Deskwise answers customer billing questions using your company's actual documentation — **and any document the user uploads mid-conversation**. Every response shows exactly which sections it drew from, with match scores. When the question falls outside what the docs cover, it doesn't improvise — it hands off to a human with contact details and logs a ticket.
 
-That behavior isn't a claim. It's measured: 25 benchmark cases, 15 in-scope and 10 deliberately out-of-scope, scoring **100% on in-scope recall** and **90% on correctly refusing what it shouldn't answer**.
+That behavior isn't a claim. It's measured: 25 benchmark cases, 15 in-scope and 10 deliberately out-of-scope, scoring **93% on in-scope recall** and **100% on correctly refusing what it shouldn't answer**.
 
 **Vertical:** SaaS billing & subscription support — pricing tiers, refund policy, cancellation flow, payment failure handling, proration rules, invoice/tax management.
 
-**Stack:** Next.js 16 (App Router) · Gemini 2.0 Flash · Qdrant Cloud · Neon Postgres · Drizzle ORM · TypeScript
+**Stack:** Next.js 16 (App Router) · OpenRouter · Qdrant Cloud · Neon Postgres · Drizzle ORM · TypeScript
 
 ---
 
@@ -17,8 +17,9 @@ That behavior isn't a claim. It's measured: 25 benchmark cases, 15 in-scope and 
 ```
 User Question
   └─► POST /api/chat
-        ├─► Rate Limiter           (10 req/min per session — prevents Gemini 429s)
-        ├─► Embed Query            (Gemini gemini-embedding-001, 768d)
+        ├─► Rate Limiter           (10 req/min per session — prevents upstream 429s)
+        ├─► Contextualise Query    (elliptical follow-ups inherit the last real topic)
+        ├─► Embed Query            (OpenRouter embeddings, 768d)
         ├─► Hybrid Retrieval
         │     ├── dense  → Qdrant vector search (local cosine index as fallback)
         │     ├── sparse → Postgres full-text search over indexed chunks
@@ -26,7 +27,7 @@ User Question
         │     └── fusion → BM25 rescoring over the pool, α·dense + (1-α)·keyword
         ├─► Confidence Guardrail   (dense score < 0.55 → skip LLM, escalate + log ticket)
         ├─► Prompt Construction    (top-5 chunks + last 6 turns for follow-ups)
-        ├─► Stream Answer          (Gemini 2.0 Flash generateContentStream)
+        ├─► Stream Answer          (OpenRouter, OpenAI-compatible SSE)
         ├─► Return Citations       (X-Citations header → expandable source panel)
         └─► Persist to Neon        (conversations, messages, cited_chunk_ids, feedback)
 
@@ -51,7 +52,8 @@ User Upload
 | **Import by Link** | Paste a document URL in the panel — or straight into the chat box — and the server fetches, parses and indexes it. Hardened against SSRF: scheme allowlist, per-hop DNS/range checks, manual redirect following, size and time caps |
 | **Source Citations** | Expandable panel showing the section(s) used, with match scores and a badge marking answers grounded in your own upload |
 | **Confidence Guardrail** | Out-of-scope queries return a structured human escalation message and log a ticket — no hallucinations |
-| **Multi-turn Context** | The last six turns are replayed, so follow-up questions and pronouns resolve |
+| **Multi-turn Context** | The last six turns are replayed, and an elliptical follow-up ("and how often is it refreshed?") inherits the topic of the last substantive question *before retrieval* — otherwise it embeds to nothing and the agent refuses a question it just half-answered |
+| **Two-tier Guardrail** | The shared knowledge base is held to a strict threshold; a document the user uploaded themselves is held to a lower one, because they attached that file and asked about it |
 | **Hybrid Retrieval** | Dense vector search fused with Postgres full-text search, rescored with BM25 over the candidate pool (`HYBRID_ALPHA` tunable) |
 | **Semantic Chunking** | Markdown split on heading boundaries; unstructured uploads packed on paragraph boundaries with overlap |
 | **Vector Search** | Qdrant Cloud dense search with local cosine similarity fallback for dev/offline |
@@ -74,17 +76,31 @@ Run against 25 synthetic test cases (15 in-scope billing queries + 10 intentiona
 
 | Metric | Score | Target |
 |---|---|---|
-| **In-Scope Confidence Pass Rate** | **100.0%** | > 85% ✅ |
-| **Fallback Guardrail Precision** | **90.0%** | > 70% ✅ |
+| **In-Scope Confidence Pass Rate** | **93.3%** | > 85% ✅ |
+| **Fallback Guardrail Precision** | **100.0%** | > 70% ✅ |
 | **Overall Guardrail Accuracy** | **96.0%** | > 80% ✅ |
 
-**Confidence threshold tuning:**
+**Confidence threshold tuning** (measured on `openai/text-embedding-3-small` @ 768d):
 
 | Threshold | In-Scope Pass Rate | Fallback Precision | Decision |
 |---|---|---|---|
-| 0.40 | 100% | ~40% (too permissive) | ❌ Rejected |
-| **0.55** | **100%** | **90%** | ✅ **Selected** |
-| 0.70 | ~86% (1 false negative) | ~90% | ⚠️ Too strict |
+| 0.30 | 100% | 80% | ❌ Too permissive |
+| 0.42 | 100% | 90% | ⚠️ Trades a refusal for a hallucination |
+| **0.55** | **93.3%** | **100%** | ✅ **Selected** |
+| 0.70 | ~53% | 100% | ❌ Refuses most valid questions |
+
+The two boundary cases are worth naming, because they show the ceiling of a
+single similarity signal: one in-scope question ("do you support reverse-charge
+VAT?") scores **0.433**, *below* an out-of-scope one ("can I manage my crypto
+portfolio?") at **0.492**. No threshold separates them — 0.55 and 0.42 both give
+96% overall, they just choose which of the two to get wrong. 0.55 is kept
+because a wrong refusal is recoverable (the user rephrases, or attaches the
+document) while a confident wrong answer is not.
+
+> Re-tuned after moving to OpenRouter. Thresholds are calibrated per embedding
+> model — this one separates out-of-scope queries far more sharply than the
+> previous model (worst case 0.492 versus 0.657), which is what pushed fallback
+> precision from 90% to 100%.
 
 > Full benchmark details: [`eval-results.md`](./eval-results.md) · Test dataset: [`scripts/eval-dataset.ts`](./scripts/eval-dataset.ts) · Runner: [`scripts/eval.ts`](./scripts/eval.ts)
 
@@ -106,7 +122,7 @@ Most portfolio RAG systems skip evaluation entirely. Deskwise includes a 25-case
 
 **4. Built fallback logic so the agent never hallucinates unsupported answers — escalates instead.**
 
-If retrieval confidence is below 0.55, the API route skips the LLM call entirely (saves tokens + latency) and returns a structured escalation message with contact info, and writes a `tickets` row so the gap is visible in the admin dashboard. This is safer and cheaper than asking Gemini to answer with low-quality context.
+If retrieval confidence is below 0.55, the API route skips the LLM call entirely (saves tokens + latency) and returns a structured escalation message with contact info, and writes a `tickets` row so the gap is visible in the admin dashboard. This is safer and cheaper than asking the model to answer with low-quality context.
 
 **5. Fused two retrieval arms instead of reranking one — and kept the guardrail on the dense score.**
 
@@ -137,8 +153,8 @@ So a user chunk stores its 768-d vector in its own row (rounded to six decimals 
 | Frontend/Backend | Next.js 16 (App Router, TypeScript) | Full-stack in one framework, zero config deploy to Vercel |
 | Vector DB | Qdrant Cloud (free cluster) | Native hybrid search, dedicated scaling, named vector-DB skill |
 | Relational DB | Neon (serverless Postgres) | Conversations, feedback, doc metadata; serverless cold-start solved by loading overlay |
-| Embeddings | Gemini `gemini-embedding-001` @ 768d, or any OpenRouter embedding model | 768 of Gemini's 3072 dimensions are requested so the Qdrant collection stays valid. Width is asserted at runtime — a mismatch is the one failure that otherwise stays silent. |
-| LLM | OpenRouter or Gemini, model set by env | Provider is a config change, not a code change. Roles are split, so chat can run on an OpenRouter free model while embeddings stay on Gemini. |
+| Embeddings | OpenRouter `openai/text-embedding-3-small` @ 768d | Dimension truncation keeps vectors compatible with the Qdrant collection. Width is asserted at runtime — a mismatch is the one failure that otherwise stays silent. |
+| LLM | OpenRouter, model set by `OPENROUTER_MODEL` | One key, hundreds of models, OpenAI-compatible. Changing model is a config change, not a code change. |
 | ORM | Drizzle ORM | Type-safe Postgres queries, lightweight |
 | Sparse search | Postgres `to_tsvector` / `ts_rank_cd` | Keyword arm of hybrid retrieval over chunks already stored in Neon — no second index to maintain |
 | Document parsing | `unpdf` (PDF), `mammoth` (DOCX) | Serverless-friendly, no native binaries; page-aware extraction for PDF chunk labels |
@@ -182,8 +198,7 @@ deskwise/
 ├── lib/
 │   ├── ai/
 │   │   ├── provider.ts              # Resolves provider/model/dimension per role
-│   │   ├── llm.ts                   # Streaming generation (OpenRouter SSE / Gemini)
-│   │   ├── gemini.ts                # Gemini SDK client
+│   │   ├── llm.ts                   # Streaming generation over OpenRouter SSE
 │   │   └── embeddings.ts            # Provider-agnostic embedding + width guard
 │   ├── db/
 │   │   ├── schema.ts                # Drizzle ORM schema (6 tables)
@@ -209,7 +224,8 @@ deskwise/
 │   ├── eval-dataset.ts              # 25 benchmark Q&A test cases
 │   ├── eval.ts                      # Evaluation harness — outputs eval-results.md
 │   ├── search-test.ts               # CLI retrieval probe (accepts a session id)
-│   ├── provider-check.ts            # Live check of keys, models and vector width
+│   ├── provider-check.ts            # Live check of key, models and vector width
+│   ├── reembed.ts                   # Re-embed user uploads after a model change
 │   ├── openrouter-mock-check.ts     # Offline check of SSE parsing and error mapping
 │   ├── ssrf-check.ts                # Asserts the link importer's address guard
 │   ├── cleanup-session.ts           # Wipe one session's uploads, chat and tickets
@@ -225,7 +241,7 @@ deskwise/
 
 - Node.js 18+
 - Neon Postgres account — [neon.tech](https://neon.tech) (free)
-- Google Gemini API key — [aistudio.google.com](https://aistudio.google.com) (free)
+- OpenRouter API key — [openrouter.ai/keys](https://openrouter.ai/keys) (`:free` chat models need no balance)
 - Qdrant Cloud account — [cloud.qdrant.io](https://cloud.qdrant.io) (free, optional — local cosine fallback available)
 
 ### Setup
@@ -243,13 +259,9 @@ cp .env.example .env.local
 Edit `.env.local`:
 
 ```env
-# Providers — generation and embeddings are resolved separately
-AI_PROVIDER=openrouter                      # or "gemini"; inferred if unset
-EMBEDDING_PROVIDER=gemini                   # defaults to AI_PROVIDER
-
 OPENROUTER_API_KEY=sk-or-v1-...
 OPENROUTER_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
-GEMINI_API_KEY=your_gemini_api_key
+OPENROUTER_EMBEDDING_MODEL=openai/text-embedding-3-small
 EMBEDDING_DIMENSION=768                     # must match the Qdrant collection
 
 DATABASE_URL=your_neon_connection_string
@@ -276,9 +288,8 @@ retrieval to work at all.
 |---|---|---|
 | `No endpoints found for <model>` | OpenRouter model id retired or misspelled | Pick a current id from [openrouter.ai/models](https://openrouter.ai/models) |
 | `insufficient credit` | OpenRouter balance is $0 and the model is paid | Use a `:free` model, or add credit |
-| A 429 that never clears | Gemini free tier grants no daily quota for that model (`limit: 0`) | Change `GEMINI_MODEL`, or move generation to OpenRouter |
-| `model was not recognised` | Display name used instead of the API id | `gemini-2.5-flash-lite`, not `Gemini 2.5 Flash Lite` |
-| Every answer escalates after a provider switch | Embedding model changed, so stored vectors are from a different vector space | Re-run `npx tsx scripts/ingest.ts` |
+| `model was not recognised` | The display name from a provider UI used instead of the API id | Use the lowercase, hyphenated id |
+| **Every answer escalates** after changing the embedding model | Stored vectors are from a different model, so similarity collapses | `npx tsx scripts/ingest.ts` **and** `npx tsx scripts/reembed.ts` |
 
 ```bash
 # 3. Push database schema
@@ -337,14 +348,14 @@ These are stated explicitly and by design — this is a portfolio/demo project, 
 
 | Limitation | Detail |
 |---|---|
-| **Free-tier infrastructure** | Qdrant Cloud (~1 GB storage), Neon (0.5 GB, autosuspend on idle), Gemini (RPM/RPD caps) |
+| **Free-tier infrastructure** | Qdrant Cloud (~1 GB storage), Neon (0.5 GB, autosuspend on idle), OpenRouter (`:free` models are rate limited) |
 | **Model availability varies by account** | Free-tier quota and routable model ids change over time on both providers. Provider, model and embedding width are all environment settings, so a dead model is a config change; `scripts/provider-check.ts` tells you which part broke. |
 | **Neon cold start** | First query after ~5 min idle may take 300–500 ms. Handled by the branded loading overlay so it doesn't look like a bug. |
 | **Rate limiting** | In-memory per-session throttle (10 req/min). Resets on server cold-start. Sufficient for demo traffic. |
 | **Eval set is synthetic** | 25 hand-authored Q&A pairs, not production-scale query logs. Still more rigor than 95% of portfolio RAGs. |
-| **Mock embeddings in dev** | Used only when `GEMINI_API_KEY` is entirely unset. When a key is present, embedding failures raise rather than fall back — mixing mock and Gemini vectors collapses cosine similarity and would silently disable the guardrail. |
+| **Mock embeddings in dev** | Used only when `OPENROUTER_API_KEY` is entirely unset. When a key is present, embedding failures raise rather than fall back — mixing mock and real vectors collapses cosine similarity and would silently disable the guardrail. |
 | **Admin uploads are local-only** | Serverless filesystems are read-only, so uploading through `/admin` on Vercel returns a clear 503. Commit new docs to `kb-docs/` and redeploy, or run the panel locally. *End-user uploads are unaffected* — they go to Postgres, not the filesystem. |
-| **Upload quotas** | 5 documents per session, 8 MB per file, first 40 chunks indexed, swept after 7 days. Deliberate ceilings so a demo can't exhaust the Neon or Gemini free tier. |
+| **Upload quotas** | 5 documents per session, 8 MB per file, first 40 chunks indexed, swept after 7 days. Deliberate ceilings so a demo can't exhaust the Neon free tier or the OpenRouter balance. |
 | **No OCR** | Scanned/image-only PDFs have no text layer; the upload is rejected with an explanation rather than silently indexing nothing. |
 | **Link import fetches once, without JS** | The importer downloads the URL as-is. A page that renders its text client-side, or one behind a login or a bot check, arrives empty and is rejected — download it and upload the file instead. DNS-rebinding is not mitigated; see decision 6. |
 | **Uploads aren't in Qdrant** | Session documents live only in Postgres. That keeps the shared collection clean, at the cost of a linear scan — fine at 200 chunks per session, not a design for thousands. |

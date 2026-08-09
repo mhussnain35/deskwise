@@ -16,7 +16,6 @@ export interface DocumentsState {
   upload: (files: File[] | FileList) => Promise<void>;
   importUrl: (url: string) => Promise<boolean>;
   remove: (docId: string) => Promise<void>;
-  clearMessages: () => void;
 }
 
 /** Loads, uploads and deletes the documents attached to one chat session. */
@@ -57,11 +56,6 @@ export function useDocuments(sessionId: string): DocumentsState {
       cancelled = true;
     };
   }, [sessionId]);
-
-  const clearMessages = useCallback(() => {
-    setError(null);
-    setNotice(null);
-  }, []);
 
   const upload = useCallback(
     async (files: File[] | FileList) => {
@@ -179,7 +173,6 @@ export function useDocuments(sessionId: string): DocumentsState {
     upload,
     importUrl,
     remove,
-    clearMessages,
   };
 }
 

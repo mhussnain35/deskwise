@@ -1,6 +1,6 @@
 /**
  * Sliding-window rate limiter for /api/chat
- * Prevents Gemini free-tier 429s during live demos by enforcing per-session limits.
+ * Prevents upstream free-tier 429s during live demos by enforcing per-session limits.
  * Uses in-memory store (resets on cold start, which is fine for demo/portfolio use).
  */
 

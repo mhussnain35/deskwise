@@ -12,6 +12,8 @@ import { desc, eq } from "drizzle-orm";
 
 // Retrieval reads uploaded documents through the Node-only parsing stack.
 export const runtime = "nodejs";
+// Retrieval plus a streamed answer; the platform default of 10s is too tight.
+export const maxDuration = 30;
 
 /** How many prior turns are replayed so follow-up questions resolve. */
 const HISTORY_TURNS = 6;
@@ -180,8 +182,18 @@ export async function POST(req: NextRequest) {
     const assistantMessageId = crypto.randomUUID();
 
     // 2. Perform RAG Retrieval across the knowledge base and this session's
-    //    own uploaded documents.
-    const retrieval = await retrieveContext(message, 5, { sessionId: activeSessionId });
+    //    own uploaded documents. The previous question goes along so an
+    //    elliptical follow-up ("and how often is it refreshed?") is searched
+    //    on the topic it inherits rather than on its own pronouns.
+    const previousQuestions = [...priorTurns]
+      .reverse()
+      .filter((turn) => turn.role === "user")
+      .map((turn) => turn.content);
+
+    const retrieval = await retrieveContext(message, 5, {
+      sessionId: activeSessionId,
+      previousQuestions,
+    });
     const encoder = new TextEncoder();
 
     // 3. Confidence Guardrail Check
@@ -227,18 +239,35 @@ export async function POST(req: NextRequest) {
 
     const fullUserPrompt = `Knowledge Base Context:\n${contextPrompt}\n\nUser Question: ${message}`;
 
+    const hasUserSources = retrieval.chunks.some((chunk) => chunk.scope === "user");
+
+    // The instruction is explicit that a partial answer beats a refusal. The
+    // retrieval guardrail has already decided there is usable context by this
+    // point, so a model that then declines is failing twice over — the user
+    // attached a document, asked about it, and got nothing.
     const systemInstruction =
-      "You are Deskwise, an AI customer support assistant for SaaS billing & subscription support.\n" +
+      "You are Deskwise, an AI customer support assistant for SaaS billing and subscription " +
+      "support.\n" +
       "You answer from two kinds of source: the company knowledge base, and documents the user " +
-      "uploaded themselves for this conversation.\n" +
-      "STRICT RULES:\n" +
-      "1. Answer the user's question accurately using ONLY the provided Knowledge Base Context.\n" +
-      "2. Be concise, professional, and clear.\n" +
-      "3. Reference source documents when explaining policies, and say when an answer comes from " +
-      "the user's own uploaded document.\n" +
-      "4. Do NOT hallucinate information not present in the context.\n" +
-      "5. Earlier turns are provided for context — resolve follow-up questions and pronouns " +
-      "against them, but never answer from them alone.";
+      "uploaded themselves for this conversation.\n\n" +
+      "RULES:\n" +
+      "1. Answer using the provided Knowledge Base Context. It has already been retrieved as " +
+      "relevant to this question — use it.\n" +
+      "2. ALWAYS give the most useful answer the context supports. If it answers the question " +
+      "only partially, say what it does cover and name what is missing. Never reply that you " +
+      "cannot find anything when context is present.\n" +
+      "3. Do not invent facts that are absent from the context, and do not rely on general " +
+      "knowledge for specifics such as amounts, dates, names or policies.\n" +
+      "4. Be concise, professional and clear. Use short paragraphs or bullets.\n" +
+      "5. Cite the source by its title or section when stating a policy or figure, and say " +
+      "explicitly when an answer comes from the user's own uploaded document.\n" +
+      "6. Earlier turns are provided for context — resolve follow-up questions and pronouns " +
+      "against them, but never answer from them alone.\n" +
+      (hasUserSources
+        ? "\nThe user has attached their own document and some of the context below comes from " +
+          "it. Treat that document as the authority for this question, and answer from it " +
+          "directly — quoting the relevant lines where it helps."
+        : "");
 
     // Replay recent turns so follow-ups ("what about the annual plan?") resolve.
     // Each turn's retrieved context is intentionally not replayed — only the

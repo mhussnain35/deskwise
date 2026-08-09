@@ -4,6 +4,10 @@ import { invalidateLocalIndex } from "@/lib/rag/retriever";
 import { requireAdmin } from "@/lib/admin-auth";
 import { UpstreamError, logUpstream } from "@/lib/errors";
 
+// A full re-embed of every knowledge base chunk.
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   const denied = requireAdmin(req);
   if (denied) return denied;

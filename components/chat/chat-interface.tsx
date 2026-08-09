@@ -171,7 +171,7 @@ export default function ChatInterface() {
       });
 
       // Handle rate limit gracefully (429) — both our own per-session limiter
-      // and an upstream Gemini quota rejection arrive here.
+      // and an upstream provider quota rejection arrive here.
       if (response.status === 429) {
         const data = await response.json().catch(() => ({}));
         const retrySec = Math.ceil((data.retryAfterMs || 60000) / 1000);
@@ -510,7 +510,7 @@ export default function ChatInterface() {
         {/* Provider/limit detail is desk-side context, not something a phone
             keyboard should be competing with for vertical space. */}
         <div className="mt-2 hidden items-center justify-between gap-3 px-1 text-[11px] text-slate-500 sm:flex">
-          <span className="truncate">Gemini 2.0 Flash · hybrid retrieval</span>
+          <span className="truncate">OpenRouter · hybrid retrieval</span>
           <span className="shrink-0 text-slate-600">10 msg/min per session</span>
         </div>
       </footer>

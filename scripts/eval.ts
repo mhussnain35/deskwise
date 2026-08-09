@@ -3,12 +3,13 @@ import fs from "fs";
 import path from "path";
 import { EVAL_DATASET } from "./eval-dataset";
 import { chunkMarkdown } from "../lib/rag/chunker";
-import { embedText } from "../lib/ai/embeddings";
+import { embedText, EMBEDDING_MODEL } from "../lib/ai/embeddings";
+import { isMockMode } from "../lib/ai/provider";
 
 // ---------------------------------------------------------------------------
 // Deskwise RAG Evaluation Harness v2
 // ---------------------------------------------------------------------------
-// Because this project uses mock embeddings in dev (no GEMINI_API_KEY),
+// Because this project uses mock embeddings in dev (no OPENROUTER_API_KEY),
 // this harness tests the two measurable properties of the RAG pipeline:
 //
 //  1. SEMANTIC CLUSTER RECALL  — does the query embed into the same cluster
@@ -20,10 +21,10 @@ import { embedText } from "../lib/ai/embeddings";
 //  3. FALLBACK GUARDRAIL PRECISION — do out-of-scope queries correctly trigger
 //     the human escalation fallback? (Validates the confidence guardrail)
 //
-// Note on "Context Retrieval Recall": With real Gemini text-embedding-004 vectors,
+// Note on "Context Retrieval Recall": With real embedding-model vectors,
 // cosine similarity is fully semantic. The mock embeddings are deterministic keyword
 // clusters used purely for local/offline testing and cannot perfectly replicate
-// Gemini's 768d semantic space. The eval therefore reports recall separately for
+// a real model's 768d semantic space. The eval therefore reports recall separately for
 // mock vs live embedding backends.
 // ---------------------------------------------------------------------------
 
@@ -63,12 +64,12 @@ function cosine(a: number[], b: number[]): number {
 }
 
 async function runEvaluation() {
-  const usingMockEmbeddings = !process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === "dummy-key-for-dev";
+  const usingMockEmbeddings = isMockMode();
 
   console.log("=".repeat(58));
   console.log("📊 Deskwise RAG Evaluation Harness v2");
   console.log(`🧪 ${EVAL_DATASET.length} benchmark cases (15 in-scope, 10 out-of-scope)`);
-  console.log(`🔌 Embedding backend: ${usingMockEmbeddings ? "mock (dev mode)" : "Gemini text-embedding-004"}`);
+  console.log(`🔌 Embedding backend: ${usingMockEmbeddings ? "mock (dev mode)" : EMBEDDING_MODEL}`);
   console.log(`🛡️  Confidence threshold: ${CONFIDENCE_THRESHOLD}`);
   console.log("=".repeat(58));
   console.log("\n⏳ Building local vector index from /kb-docs...");
@@ -121,7 +122,7 @@ async function runEvaluation() {
   const report = `# Deskwise RAG Evaluation Benchmark — Results
 
 **Run Date:** ${new Date().toISOString()}  
-**Embedding Backend:** ${usingMockEmbeddings ? "Keyword-cluster mock (no GEMINI_API_KEY)" : "Gemini text-embedding-004 (live)"}  
+**Embedding Backend:** ${usingMockEmbeddings ? "Keyword-cluster mock (no OPENROUTER_API_KEY)" : `${EMBEDDING_MODEL} (live)`}
 **Confidence Threshold:** \`${CONFIDENCE_THRESHOLD}\`  
 **Test Cases:** ${EVAL_DATASET.length} total (${inScope.length} in-scope, ${outOfScope.length} out-of-scope)
 
@@ -135,7 +136,7 @@ async function runEvaluation() {
 | **Fallback Guardrail Precision** | **${fallbackPrecision.toFixed(1)}%** | > 70% | ${fallbackPrecision >= 70 ? "✅ PASS" : "❌ FAIL"} |
 | **Overall Guardrail Accuracy** | **${overallAccuracy.toFixed(1)}%** | > 80% | ${overallAccuracy >= 80 ? "✅ PASS" : "❌ FAIL"} |
 
-> **Note on Retrieval Recall:** Context retrieval recall (did the top chunk come from the correct document) is only meaningful with real semantic embeddings. With mock embeddings, overlapping vocabulary between out-of-scope queries and document chunk headers can skew cosine scores. With a live \`GEMINI_API_KEY\`, recall is measured as a true semantic metric. See "Known Limitations" in the README.
+> **Note on Retrieval Recall:** Context retrieval recall (did the top chunk come from the correct document) is only meaningful with real semantic embeddings. With mock embeddings, overlapping vocabulary between out-of-scope queries and document chunk headers can skew cosine scores. With a live \`OPENROUTER_API_KEY\`, recall is measured as a true semantic metric. See "Known Limitations" in the README.
 
 ---
 

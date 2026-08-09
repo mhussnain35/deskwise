@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 415 });
     }
 
-    // Embedding runs against Gemini, so quota and outage failures land here.
+    // Embedding runs against the provider, so quota and outage failures land here.
     const upstream = error instanceof UpstreamError ? error : maybeUpstream(error);
     if (upstream) {
       logUpstream("Documents API] Embedding upload", upstream);

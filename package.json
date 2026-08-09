@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@google/genai": "^1.0.0",
     "@neondatabase/serverless": "^0.10.4",
     "@qdrant/js-client-rest": "^1.13.0",
     "clsx": "^2.1.1",

@@ -58,7 +58,7 @@ export function SplashScreen() {
       <p className="relative text-xs text-slate-500">Starting up…</p>
 
       <p className="absolute bottom-[max(1.25rem,env(safe-area-inset-bottom))] text-[11px] text-slate-600">
-        Gemini 2.0 Flash · Qdrant · Neon Postgres
+        OpenRouter · Qdrant · Neon Postgres
       </p>
     </div>
   );

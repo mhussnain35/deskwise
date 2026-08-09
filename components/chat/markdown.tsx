@@ -5,7 +5,7 @@ import React from "react";
  *
  * Deliberately not a full parser: the text arrives token by token, so the
  * renderer has to cope with half-finished syntax on every frame. It handles the
- * shapes Gemini actually produces in support answers — headings, bullet and
+ * shapes the model actually produces in support answers — headings, bullet and
  * numbered lists, bold, and inline code — and passes everything else through as
  * plain text rather than swallowing it.
  */

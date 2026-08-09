@@ -8,7 +8,7 @@ export const ADMIN_TOKEN_HEADER = "x-admin-token";
  * Both routes mutate the knowledge base — writing markdown that is then fed
  * straight into the model's grounding context, and triggering a full re-embed
  * of every chunk. Left open, anyone who finds the URL can rewrite what the
- * support agent tells your customers, or drain the Gemini quota on demand.
+ * support agent tells your customers, or drain the provider quota on demand.
  *
  * Configure `ADMIN_TOKEN` to enable them. Without it they stay open in local
  * development (so the demo works out of the box) and are disabled in

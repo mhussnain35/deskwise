@@ -39,10 +39,71 @@ export interface RetrievalResult {
 export interface RetrieveOptions {
   /** Session whose uploaded documents should be searched alongside the KB. */
   sessionId?: string;
+  /** Earlier user questions, most recent first, for resolving follow-ups. */
+  previousQuestions?: string[];
 }
 
-// Confidence score threshold: queries scoring below this skip LLM and return human escalation fallback
-export const CONFIDENCE_THRESHOLD = 0.55;
+const ANAPHORA = /\b(it|its|they|them|their|that|this|those|these|one|same)\b/i;
+const DISCOURSE_OPENER = /^(and|but|so|then|also|plus|what about|how about|ok|okay)\b/i;
+
+/**
+ * Does this question only make sense in the context of the previous one?
+ *
+ * "And how often is it refreshed?" contains no topic at all — embedded on its
+ * own it lands nowhere near the document that answers it, every score falls
+ * under the threshold, and the agent refuses a question it just answered the
+ * first half of. Short queries and ones leaning on a pronoun or a discourse
+ * opener are the tell.
+ */
+function needsPriorContext(query: string): boolean {
+  return tokenize(query).length <= 4 || ANAPHORA.test(query) || DISCOURSE_OPENER.test(query);
+}
+
+/**
+ * The text actually embedded for retrieval.
+ *
+ * Follow-ups are prefixed with the most recent *substantive* question, so the
+ * vector carries the topic. Walking back past other follow-ups matters: in a
+ * chain like "how much is the stipend?" → "and how often?" → "what about that
+ * approval rule?", anchoring on the immediately previous turn inherits another
+ * contentless question and retrieval still lands nowhere.
+ *
+ * Deliberately a string concatenation rather than an LLM rewriting call: it
+ * costs nothing, adds no latency, and cannot fail — and for the elliptical
+ * follow-ups that actually break, it recovers the topic just as well.
+ */
+export function buildRetrievalQuery(query: string, previousQuestions: string[] = []): string {
+  if (!needsPriorContext(query)) return query;
+
+  const anchor =
+    previousQuestions.find((question) => !needsPriorContext(question)) ?? previousQuestions[0];
+
+  return anchor ? `${anchor}\n${query}` : query;
+}
+
+/**
+ * Similarity a knowledge base chunk must reach before the agent will answer
+ * from it. Below this it escalates to a human instead of guessing.
+ */
+export const CONFIDENCE_THRESHOLD = envThreshold("CONFIDENCE_THRESHOLD", 0.55);
+
+/**
+ * The same gate for a document the user uploaded themselves — deliberately
+ * lower.
+ *
+ * The shared knowledge base is a fixed corpus, so a weak match there genuinely
+ * means "we don't cover this". An uploaded document is the opposite situation:
+ * the user attached that file and then asked about it, so the context is
+ * theirs by construction. Holding uploads to the corpus threshold made the
+ * agent refuse questions its own context could answer — the single most
+ * confusing thing this app could do.
+ */
+export const USER_DOC_CONFIDENCE_THRESHOLD = envThreshold("USER_DOC_CONFIDENCE_THRESHOLD", 0.35);
+
+function envThreshold(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : fallback;
+}
 
 const KB_DOCS_DIR = path.join(process.cwd(), "kb-docs");
 
@@ -69,7 +130,10 @@ export async function retrieveContext(
   topK: number = 5,
   options: RetrieveOptions = {}
 ): Promise<RetrievalResult> {
-  const queryVector = await embedText(query);
+  // Both arms search on the contextualised text, so a follow-up is matched on
+  // the topic it inherits rather than on its own handful of pronouns.
+  const searchQuery = buildRetrievalQuery(query, options.previousQuestions);
+  const queryVector = await embedText(searchQuery);
 
   const pool = new Map<string, RetrievedChunk>();
   const add = (chunk: RetrievedChunk) => {
@@ -90,7 +154,7 @@ export async function retrieveContext(
   // Only meaningful against Qdrant results: the local fallback already scores
   // every chunk in the knowledge base, so nothing can be missing from the pool.
   if (qdrantUsed) {
-    const sparseHits = await postgresKeywordSearch(query, SPARSE_CANDIDATES);
+    const sparseHits = await postgresKeywordSearch(searchQuery, SPARSE_CANDIDATES);
     const missing = sparseHits.filter((hit) => !pool.has(hit.id));
     const scored = await attachDenseScores(missing, queryVector);
     scored.forEach(add);
@@ -117,7 +181,7 @@ export async function retrieveContext(
 
   // --- Fusion -------------------------------------------------------------
   const candidates = Array.from(pool.values());
-  const keywordScores = scoreKeywordRelevance(query, candidates);
+  const keywordScores = scoreKeywordRelevance(searchQuery, candidates);
 
   const ranked = candidates
     .map((candidate, index) => ({
@@ -131,15 +195,27 @@ export async function retrieveContext(
   // The guardrail stays on dense similarity. Keyword overlap alone is a weak
   // signal of "we actually know this" — an out-of-scope question that happens
   // to share a word with a policy would otherwise sail past the threshold.
-  const topScore = ranked.reduce((max, chunk) => Math.max(max, chunk.score), 0);
+  //
+  // Each scope is judged against its own threshold, then either one passing is
+  // enough: a strong knowledge base match, or any reasonable match inside a
+  // document this user attached themselves.
+  const bestKb = bestScoreFor(ranked, "kb");
+  const bestUser = bestScoreFor(ranked, "user");
+
+  const confidencePassed =
+    bestKb >= CONFIDENCE_THRESHOLD || bestUser >= USER_DOC_CONFIDENCE_THRESHOLD;
 
   return {
     query,
     chunks: ranked,
-    topScore,
-    confidencePassed: topScore >= CONFIDENCE_THRESHOLD,
+    topScore: Math.max(bestKb, bestUser),
+    confidencePassed,
     usedUserDocs: ranked.some((chunk) => chunk.scope === "user"),
   };
+}
+
+function bestScoreFor(chunks: RetrievedChunk[], scope: "kb" | "user"): number {
+  return chunks.reduce((max, chunk) => (chunk.scope === scope ? Math.max(max, chunk.score) : max), 0);
 }
 
 async function qdrantSearch(queryVector: number[], limit: number): Promise<RetrievedChunk[]> {
@@ -280,7 +356,7 @@ async function attachDenseScores(
 //
 // The local fallback used to re-read every kb-doc and re-embed all 47 chunks on
 // every single request — ~47 embedding round-trips per question, which both
-// blew the 30s function budget and burned through the Gemini free-tier quota.
+// blew the 30s function budget and burned through the provider quota.
 // The index is now built once per process and reused, keyed by a cheap
 // signature of the kb-docs directory so uploads and re-indexes invalidate it.
 // ---------------------------------------------------------------------------

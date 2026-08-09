@@ -15,13 +15,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Deskwise — AI SaaS Billing Support Agent",
   description:
-    "Deskwise is a production-style RAG customer support agent for SaaS billing & subscription management, built with Next.js, Gemini 2.0 Flash, Qdrant Cloud, and Neon Postgres.",
+    "Deskwise is a production-style RAG customer support agent for SaaS billing & subscription management, built with Next.js, OpenRouter, Qdrant Cloud, and Neon Postgres.",
   keywords: [
     "RAG",
     "retrieval-augmented generation",
     "AI customer support",
     "SaaS billing",
-    "Gemini",
+    "OpenRouter",
     "Qdrant",
     "Next.js",
     "vector search",

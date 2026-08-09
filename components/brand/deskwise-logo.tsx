@@ -57,20 +57,3 @@ export function DeskwiseMark({
   );
 }
 
-/** Mark plus the product name, for headers and the splash screen. */
-export function DeskwiseWordmark({
-  className = "",
-  markClassName = "h-9 w-9",
-  nameClassName = "text-lg",
-}: {
-  className?: string;
-  markClassName?: string;
-  nameClassName?: string;
-}) {
-  return (
-    <span className={`inline-flex items-center gap-2.5 ${className}`}>
-      <DeskwiseMark className={markClassName} />
-      <span className={`font-semibold tracking-tight text-white ${nameClassName}`}>Deskwise</span>
-    </span>
-  );
-}

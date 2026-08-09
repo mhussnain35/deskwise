@@ -1,18 +1,11 @@
-import { ai } from "./gemini";
-import {
-  AI_PROVIDER,
-  OPENROUTER_BASE_URL,
-  generationModel,
-  openRouterHeaders,
-} from "./provider";
+import { OPENROUTER_BASE_URL, generationModel, openRouterHeaders } from "./provider";
 import { UpstreamError, toUpstreamError } from "../errors";
 
 /**
- * Provider-agnostic streaming generation.
+ * Streaming generation against OpenRouter's OpenAI-compatible API.
  *
- * The chat route knows nothing about which vendor is answering: it awaits a
- * stream of text deltas and forwards them. Awaiting the *opening* of the stream
- * matters — that is where auth and quota failures surface, and catching them
+ * The chat route awaits the *opening* of the stream before writing anything:
+ * that is where auth, quota and bad-model failures surface, and catching them
  * before any bytes are committed is what lets a 429 be answered as a 429 rather
  * than as a half-written 200.
  */
@@ -27,37 +20,10 @@ export interface StreamRequest {
   turns: ChatTurn[];
 }
 
-export async function streamAnswer(request: StreamRequest): Promise<AsyncIterable<string>> {
-  return AI_PROVIDER === "openrouter" ? streamOpenRouter(request) : streamGemini(request);
-}
-
-// --- Gemini -----------------------------------------------------------------
-
-async function streamGemini({ system, turns }: StreamRequest): Promise<AsyncIterable<string>> {
-  let response;
-  try {
-    response = await ai.models.generateContentStream({
-      model: generationModel(),
-      contents: turns.map((turn) => ({
-        role: turn.role === "assistant" ? "model" : "user",
-        parts: [{ text: turn.content }],
-      })),
-      config: { systemInstruction: system },
-    });
-  } catch (err) {
-    throw toUpstreamError(err, "answer generation");
-  }
-
-  return (async function* () {
-    for await (const chunk of response) {
-      if (chunk.text) yield chunk.text;
-    }
-  })();
-}
-
-// --- OpenRouter (OpenAI-compatible) -----------------------------------------
-
-async function streamOpenRouter({ system, turns }: StreamRequest): Promise<AsyncIterable<string>> {
+export async function streamAnswer({
+  system,
+  turns,
+}: StreamRequest): Promise<AsyncIterable<string>> {
   let response: Response;
 
   try {
@@ -78,7 +44,7 @@ async function streamOpenRouter({ system, turns }: StreamRequest): Promise<Async
     throw await openRouterError(response, "answer generation");
   }
 
-  return readOpenRouterStream(response.body);
+  return readStream(response.body);
 }
 
 /**
@@ -90,7 +56,7 @@ async function streamOpenRouter({ system, turns }: StreamRequest): Promise<Async
  *   - a chunk can split mid-line, so the tail is buffered rather than parsed
  *   - errors can arrive *inside* the stream, after a 200, as an `error` object
  */
-async function* readOpenRouterStream(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+async function* readStream(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -107,8 +73,7 @@ async function* readOpenRouterStream(body: ReadableStream<Uint8Array>): AsyncIte
 
       for (const rawLine of lines) {
         const line = rawLine.trim();
-        if (!line || line.startsWith(":")) continue;
-        if (!line.startsWith("data:")) continue;
+        if (!line || line.startsWith(":") || !line.startsWith("data:")) continue;
 
         const payload = line.slice(5).trim();
         if (payload === "[DONE]") return;
@@ -156,9 +121,8 @@ export async function openRouterError(response: Response, context: string): Prom
   }
 
   const retryAfterHeader = Number(response.headers.get("retry-after"));
-  const retryAfterSeconds = Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
-    ? retryAfterHeader
-    : undefined;
+  const retryAfterSeconds =
+    Number.isFinite(retryAfterHeader) && retryAfterHeader > 0 ? retryAfterHeader : undefined;
 
   if (response.status === 429) {
     return new UpstreamError(
@@ -180,7 +144,7 @@ export async function openRouterError(response: Response, context: string): Prom
 
   if (response.status === 402) {
     return new UpstreamError(
-      "The AI account has insufficient credit for this request.",
+      "The AI account has insufficient credit for this model. Switch OPENROUTER_MODEL to a \":free\" model, or add credit.",
       502,
       { cause: detail }
     );

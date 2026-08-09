@@ -1,8 +1,8 @@
 /**
- * Upstream (Gemini / Qdrant / Neon) failure wrapper.
+ * Upstream (OpenRouter / Qdrant / Neon) failure wrapper.
  *
  * Provider SDKs throw errors whose `message` is the raw provider response body —
- * for Gemini that includes quota metric names, quota IDs and internal retry
+ * for OpenRouter that includes account, key and routing detail, plus upstream
  * hints. Those must never reach the browser, so every upstream failure is
  * normalised here into a safe status + a message written for an end user, with
  * the original kept server-side for logging only.
@@ -31,7 +31,7 @@ function extractStatus(err: unknown): number | undefined {
     if (typeof value === "number" && value >= 400 && value < 600) return value;
   }
 
-  // Gemini's ApiError stringifies the provider body into `message`.
+  // Provider SDKs commonly stringify the response body into `message`.
   if (typeof e.message === "string") {
     if (/RESOURCE_EXHAUSTED|"code"\s*:\s*429|Too Many Requests/.test(e.message)) return 429;
     if (/"code"\s*:\s*(401|403)|PERMISSION_DENIED|API key not valid/.test(e.message)) return 403;
@@ -48,7 +48,7 @@ function extractModelId(err: unknown): string | undefined {
   return /models\/([\w.:-]+)/.exec(message)?.[1] ?? undefined;
 }
 
-/** Pull Gemini's `"Please retry in 42.45s"` / `retryDelay: "42s"` hint, if present. */
+/** Pull a `"Please retry in 42.45s"` / `retryDelay: "42s"` hint, if present. */
 function extractRetryAfter(err: unknown): number | undefined {
   if (typeof err !== "object" || err === null) return undefined;
   const message = (err as { message?: unknown }).message;
@@ -88,10 +88,10 @@ export function toUpstreamError(err: unknown, context: string): UpstreamError {
   }
 
   // A model id that doesn't exist is a configuration mistake, not an outage —
-  // and it is the single most likely failure when switching provider, because
-  // the id in a provider's UI ("Gemini 2.5 Flash Lite") is a display name, not
-  // the API id ("gemini-2.5-flash-lite"). Saying so beats "try again shortly",
-  // which invites waiting for a problem that will never resolve on its own.
+  // and it is the single most likely failure when changing models, because the
+  // name shown in a provider's UI is usually not the API id. Saying so beats
+  // "try again shortly", which invites waiting for a problem that will never
+  // resolve on its own.
   if (status === 404) {
     const model = extractModelId(err);
     return new UpstreamError(

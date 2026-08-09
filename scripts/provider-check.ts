@@ -1,12 +1,5 @@
 import "./load-env";
-import {
-  AI_PROVIDER,
-  EMBEDDING_PROVIDER,
-  embeddingDimension,
-  generationModel,
-  embeddingModel,
-  isMockMode,
-} from "../lib/ai/provider";
+import { embeddingDimension, generationModel, embeddingModel, isMockMode } from "../lib/ai/provider";
 import { embedText } from "../lib/ai/embeddings";
 import { streamAnswer } from "../lib/ai/llm";
 import { cosineSimilarity } from "../lib/rag/vector";
@@ -23,18 +16,14 @@ import { cosineSimilarity } from "../lib/rag/vector";
  */
 async function main() {
   console.log("=".repeat(60));
-  console.log("🔌 Deskwise provider check");
-  console.log(`   Generation : ${AI_PROVIDER} · ${generationModel()}`);
-  console.log(`   Embeddings : ${EMBEDDING_PROVIDER} · ${embeddingModel()}`);
-  console.log(`   Dimension  : ${embeddingDimension()} (must match Qdrant)`);
+  console.log("🔌 Deskwise provider check (OpenRouter)");
+  console.log(`   Chat model      : ${generationModel()}`);
+  console.log(`   Embedding model : ${embeddingModel()}`);
+  console.log(`   Dimension       : ${embeddingDimension()} (must match Qdrant)`);
   console.log("=".repeat(60));
 
-  if (isMockMode("generation") || isMockMode("embedding")) {
-    console.error(
-      "\n❌ No API key found for " +
-        (isMockMode("generation") ? "generation" : "embeddings") +
-        ". Set OPENROUTER_API_KEY (or GEMINI_API_KEY) in .env.local."
-    );
+  if (isMockMode()) {
+    console.error("\n❌ No API key found. Set OPENROUTER_API_KEY in .env.local.");
     process.exit(1);
   }
 
