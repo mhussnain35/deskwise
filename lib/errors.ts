@@ -35,9 +35,17 @@ function extractStatus(err: unknown): number | undefined {
   if (typeof e.message === "string") {
     if (/RESOURCE_EXHAUSTED|"code"\s*:\s*429|Too Many Requests/.test(e.message)) return 429;
     if (/"code"\s*:\s*(401|403)|PERMISSION_DENIED|API key not valid/.test(e.message)) return 403;
+    if (/"code"\s*:\s*404|NOT_FOUND|is not found|not supported for/.test(e.message)) return 404;
   }
 
   return undefined;
+}
+
+/** Pull the model id out of a provider's "model not found" complaint. */
+function extractModelId(err: unknown): string | undefined {
+  const message = (err as { message?: unknown })?.message;
+  if (typeof message !== "string") return undefined;
+  return /models\/([\w.:-]+)/.exec(message)?.[1] ?? undefined;
 }
 
 /** Pull Gemini's `"Please retry in 42.45s"` / `retryDelay: "42s"` hint, if present. */
@@ -74,6 +82,22 @@ export function toUpstreamError(err: unknown, context: string): UpstreamError {
   if (status === 403 || status === 401) {
     return new UpstreamError(
       "The AI service rejected this request. Please contact support if this persists.",
+      502,
+      { cause: err }
+    );
+  }
+
+  // A model id that doesn't exist is a configuration mistake, not an outage —
+  // and it is the single most likely failure when switching provider, because
+  // the id in a provider's UI ("Gemini 2.5 Flash Lite") is a display name, not
+  // the API id ("gemini-2.5-flash-lite"). Saying so beats "try again shortly",
+  // which invites waiting for a problem that will never resolve on its own.
+  if (status === 404) {
+    const model = extractModelId(err);
+    return new UpstreamError(
+      model
+        ? `The configured model "${model}" was not recognised by the provider. Check the model id — it must be the API id, not the display name shown in the provider's UI.`
+        : "The configured AI model was not recognised by the provider. Check the model id in your environment configuration.",
       502,
       { cause: err }
     );

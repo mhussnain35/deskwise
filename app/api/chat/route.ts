@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { ai, MODEL_NAME } from "@/lib/ai/gemini";
+import { streamAnswer, type ChatTurn } from "@/lib/ai/llm";
+import { isMockMode } from "@/lib/ai/provider";
 import { db } from "@/lib/db";
 import { conversations, messages, tickets } from "@/lib/db/schema";
 import { retrieveContext, type RetrievedChunk } from "@/lib/rag/retriever";
@@ -243,12 +244,12 @@ export async function POST(req: NextRequest) {
     // Each turn's retrieved context is intentionally not replayed — only the
     // current question's sources are in scope, which keeps the prompt small and
     // stops a stale chunk from being cited for a new answer.
-    const contents = [
+    const contents: ChatTurn[] = [
       ...priorTurns.map((turn) => ({
-        role: turn.role === "assistant" ? "model" : "user",
-        parts: [{ text: turn.content }],
+        role: turn.role === "assistant" ? ("assistant" as const) : ("user" as const),
+        content: turn.content,
       })),
-      { role: "user", parts: [{ text: fullUserPrompt }] },
+      { role: "user", content: fullUserPrompt },
     ];
 
     // Format citations header for UI display
@@ -261,8 +262,8 @@ export async function POST(req: NextRequest) {
       "X-Message-Id": assistantMessageId,
     };
 
-    // 5. Call Gemini Stream
-    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === "dummy-key-for-dev") {
+    // 5. Generate the answer
+    if (isMockMode()) {
       const mockResponse =
         `Based on our **${retrieval.chunks[0]?.title || "Billing"}** documentation:\n\n` +
         `${retrieval.chunks[0]?.content.slice(0, 300)}...\n\n` +
@@ -288,15 +289,9 @@ export async function POST(req: NextRequest) {
     // Opening the stream is where quota/auth failures surface. Awaiting it here
     // — before any bytes are committed — means an upstream 429 can still be
     // answered with a proper 429 instead of a half-written 200.
-    let responseStream;
+    let responseStream: AsyncIterable<string>;
     try {
-      responseStream = await ai.models.generateContentStream({
-        model: MODEL_NAME,
-        contents,
-        config: {
-          systemInstruction,
-        },
-      });
+      responseStream = await streamAnswer({ system: systemInstruction, turns: contents });
     } catch (err) {
       throw toUpstreamError(err, "answer generation");
     }
@@ -306,8 +301,7 @@ export async function POST(req: NextRequest) {
     const customReadable = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of responseStream) {
-            const chunkText = chunk.text || "";
+          for await (const chunkText of responseStream) {
             fullAssistantResponse += chunkText;
             controller.enqueue(encoder.encode(chunkText));
           }
@@ -315,7 +309,7 @@ export async function POST(req: NextRequest) {
           // Headers are already flushed, so the only channel left is the body.
           // Emit the sanitised message — never the raw provider payload.
           const upstream = toUpstreamError(streamErr, "answer generation");
-          logUpstream("Chat API] Gemini streaming error", upstream);
+          logUpstream("Chat API] Answer streaming error", upstream);
           controller.enqueue(encoder.encode(`\n\n_${upstream.publicMessage}_`));
           fullAssistantResponse += `\n\n_${upstream.publicMessage}_`;
         }

@@ -1,33 +1,45 @@
 import { ai } from "./gemini";
+import { openRouterError } from "./llm";
+import {
+  EMBEDDING_PROVIDER,
+  OPENROUTER_BASE_URL,
+  embeddingDimension,
+  embeddingModel,
+  isMockMode,
+  openRouterHeaders,
+} from "./provider";
 import { UpstreamError, toUpstreamError } from "../errors";
 
-// text-embedding-004 was retired and now 404s on this API version. Every embed
-// call had been failing and silently falling back to mock vectors, so the whole
-// pipeline was running on keyword clusters rather than real semantics.
-// gemini-embedding-001 defaults to 3072 dims; 768 is requested explicitly to
-// stay compatible with the existing Qdrant collection.
-export const EMBEDDING_MODEL = "gemini-embedding-001";
-export const VECTOR_DIMENSION = 768;
+// Model and width both come from the environment (see lib/ai/provider.ts).
+// Gemini's text-embedding-004 was retired and 404s, which is why the default
+// there is gemini-embedding-001 with the dimension requested explicitly: it
+// defaults to 3072, and the Qdrant collection is 768.
+export const EMBEDDING_MODEL = embeddingModel();
+export const VECTOR_DIMENSION = embeddingDimension();
 
-interface EmbedResponse {
+interface GeminiEmbedResponse {
   embedding?: { values?: number[] };
   embeddings?: { values?: number[] }[];
 }
 
+interface OpenAiEmbedResponse {
+  data?: { embedding?: number[]; index?: number }[];
+  error?: { message?: string };
+}
+
 /** True when no real key is configured — the whole app runs on mock vectors. */
 export function isMockEmbeddingMode(): boolean {
-  const key = process.env.GEMINI_API_KEY;
-  return !key || key === "dummy-key-for-dev";
+  return isMockMode("embedding");
 }
 
 /**
- * Generate a 768-d vector embedding via Gemini text-embedding-004.
+ * Generate a vector embedding for one piece of text.
  *
  * Mock vectors are used only when no API key is configured at all, so that the
  * whole index and every query share one vector space. If a key IS configured
  * and the call fails, we throw rather than silently returning a mock vector —
- * mixing mock and Gemini vectors drives cosine similarity to ~0, which would
- * push every query below CONFIDENCE_THRESHOLD and make the agent escalate on
+ * mixing mock and real vectors drives cosine similarity to ~0, which would push
+ * every query below CONFIDENCE_THRESHOLD and make the agent escalate on
  * everything with no error surfaced anywhere.
  */
 export async function embedText(text: string): Promise<number[]> {
@@ -35,23 +47,90 @@ export async function embedText(text: string): Promise<number[]> {
     return generateMockEmbedding(text);
   }
 
+  const values =
+    EMBEDDING_PROVIDER === "openrouter"
+      ? await embedViaOpenRouter(text)
+      : await embedViaGemini(text);
+
+  assertDimension(values.length);
+
+  // Cosine similarity is scale-invariant, but normalising once here keeps the
+  // stored vectors unit-length so the dot product in the local index is the
+  // cosine directly — and truncated Gemini dimensions are not pre-normalised.
+  return normalize(values);
+}
+
+async function embedViaGemini(text: string): Promise<number[]> {
   try {
     const response = (await ai.models.embedContent({
       model: EMBEDDING_MODEL,
       contents: text,
       config: { outputDimensionality: VECTOR_DIMENSION },
-    })) as EmbedResponse;
+    })) as GeminiEmbedResponse;
 
     const values = response.embedding?.values || response.embeddings?.[0]?.values;
     if (!values || values.length === 0) {
-      throw new UpstreamError("Gemini returned an empty embedding.", 502);
+      throw new UpstreamError("The embedding service returned an empty vector.", 502);
     }
-
-    // Only the full 3072-d output is pre-normalised; truncated dimensions are not.
-    return normalize(values);
+    return values;
   } catch (err) {
     throw toUpstreamError(err, "embedding");
   }
+}
+
+async function embedViaOpenRouter(text: string): Promise<number[]> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${OPENROUTER_BASE_URL}/embeddings`, {
+      method: "POST",
+      headers: openRouterHeaders(),
+      body: JSON.stringify({
+        model: EMBEDDING_MODEL,
+        input: text,
+        encoding_format: "float",
+        // Matryoshka-style truncation. Models that don't support it ignore the
+        // field and return their native width, which assertDimension catches.
+        dimensions: VECTOR_DIMENSION,
+      }),
+    });
+  } catch (err) {
+    throw toUpstreamError(err, "embedding");
+  }
+
+  if (!response.ok) {
+    throw await openRouterError(response, "embedding");
+  }
+
+  const body = (await response.json()) as OpenAiEmbedResponse;
+  const values = body.data?.[0]?.embedding;
+
+  if (!values || values.length === 0) {
+    throw new UpstreamError("The embedding service returned an empty vector.", 502, {
+      cause: body.error ?? body,
+    });
+  }
+
+  return values;
+}
+
+/**
+ * Fail loudly on a width mismatch.
+ *
+ * A wrong dimension is the one failure mode that otherwise stays silent: Qdrant
+ * rejects the upsert (so nothing is indexed) while queries still "work" against
+ * whatever is already stored, and retrieval quietly degrades to nonsense. Better
+ * to stop with an instruction than to serve a broken index.
+ */
+function assertDimension(actual: number): void {
+  if (actual === VECTOR_DIMENSION) return;
+
+  throw new UpstreamError(
+    `Embedding model "${EMBEDDING_MODEL}" returned ${actual} dimensions but EMBEDDING_DIMENSION is ${VECTOR_DIMENSION}. ` +
+      `Set EMBEDDING_DIMENSION=${actual} (or pick a model that supports ${VECTOR_DIMENSION}), ` +
+      `then recreate the Qdrant collection and re-run "npx tsx scripts/ingest.ts".`,
+    500
+  );
 }
 
 /**

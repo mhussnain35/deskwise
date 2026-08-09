@@ -27,6 +27,8 @@ export async function ensureCollectionExists(): Promise<boolean> {
     const { collections } = await qdrant.getCollections();
     const exists = collections.some((c) => c.name === COLLECTION_NAME);
 
+    if (exists) await assertCollectionDimension();
+
     if (!exists) {
       console.log(`[Qdrant] Creating collection "${COLLECTION_NAME}"...`);
       await qdrant.createCollection(COLLECTION_NAME, {
@@ -45,6 +47,37 @@ export async function ensureCollectionExists(): Promise<boolean> {
   } catch (err) {
     console.error("[Qdrant] Error initializing collection:", err);
     return false;
+  }
+}
+
+/**
+ * Warn when the live collection's width doesn't match the configured embedding
+ * dimension.
+ *
+ * Switching embedding model or provider is exactly when this bites: Qdrant
+ * rejects every upsert with a size error while searches keep returning the old
+ * vectors, so indexing appears to succeed and retrieval quietly serves stale
+ * results. Naming it here turns a confusing outage into one line in the log.
+ */
+async function assertCollectionDimension(): Promise<void> {
+  if (!qdrant) return;
+
+  try {
+    const info = await qdrant.getCollection(COLLECTION_NAME);
+    const vectors = info.config?.params?.vectors;
+    const size = typeof vectors === "object" && vectors && "size" in vectors
+      ? Number((vectors as { size?: number }).size)
+      : undefined;
+
+    if (size && size !== VECTOR_DIMENSION) {
+      console.error(
+        `[Qdrant] Collection "${COLLECTION_NAME}" stores ${size}-d vectors but EMBEDDING_DIMENSION is ${VECTOR_DIMENSION}. ` +
+          `Upserts will be rejected. Delete the collection and re-run "npx tsx scripts/ingest.ts", ` +
+          `or set EMBEDDING_DIMENSION=${size}.`
+      );
+    }
+  } catch (err) {
+    console.warn("[Qdrant] Could not read collection config:", err);
   }
 }
 

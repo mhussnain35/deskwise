@@ -137,8 +137,8 @@ So a user chunk stores its 768-d vector in its own row (rounded to six decimals 
 | Frontend/Backend | Next.js 16 (App Router, TypeScript) | Full-stack in one framework, zero config deploy to Vercel |
 | Vector DB | Qdrant Cloud (free cluster) | Native hybrid search, dedicated scaling, named vector-DB skill |
 | Relational DB | Neon (serverless Postgres) | Conversations, feedback, doc metadata; serverless cold-start solved by loading overlay |
-| Embeddings | Gemini `gemini-embedding-001` @ 768d | Same API key as the LLM, no separate OpenAI dependency. 768 of the model's 3072 dimensions are requested so the existing Qdrant collection stays valid. |
-| LLM | Gemini 2.0 Flash (`GEMINI_MODEL`-overridable) | Streaming generation, free tier RPM |
+| Embeddings | Gemini `gemini-embedding-001` @ 768d, or any OpenRouter embedding model | 768 of Gemini's 3072 dimensions are requested so the Qdrant collection stays valid. Width is asserted at runtime — a mismatch is the one failure that otherwise stays silent. |
+| LLM | OpenRouter or Gemini, model set by env | Provider is a config change, not a code change. Roles are split, so chat can run on an OpenRouter free model while embeddings stay on Gemini. |
 | ORM | Drizzle ORM | Type-safe Postgres queries, lightweight |
 | Sparse search | Postgres `to_tsvector` / `ts_rank_cd` | Keyword arm of hybrid retrieval over chunks already stored in Neon — no second index to maintain |
 | Document parsing | `unpdf` (PDF), `mammoth` (DOCX) | Serverless-friendly, no native binaries; page-aware extraction for PDF chunk labels |
@@ -181,8 +181,10 @@ deskwise/
 │       └── types.ts                 # Shared chat types
 ├── lib/
 │   ├── ai/
+│   │   ├── provider.ts              # Resolves provider/model/dimension per role
+│   │   ├── llm.ts                   # Streaming generation (OpenRouter SSE / Gemini)
 │   │   ├── gemini.ts                # Gemini SDK client
-│   │   └── embeddings.ts            # gemini-embedding-001 wrapper (768d) + batch embed
+│   │   └── embeddings.ts            # Provider-agnostic embedding + width guard
 │   ├── db/
 │   │   ├── schema.ts                # Drizzle ORM schema (6 tables)
 │   │   └── index.ts                 # Neon connection pool
@@ -207,6 +209,8 @@ deskwise/
 │   ├── eval-dataset.ts              # 25 benchmark Q&A test cases
 │   ├── eval.ts                      # Evaluation harness — outputs eval-results.md
 │   ├── search-test.ts               # CLI retrieval probe (accepts a session id)
+│   ├── provider-check.ts            # Live check of keys, models and vector width
+│   ├── openrouter-mock-check.ts     # Offline check of SSE parsing and error mapping
 │   ├── ssrf-check.ts                # Asserts the link importer's address guard
 │   ├── cleanup-session.ts           # Wipe one session's uploads, chat and tickets
 │   └── load-env.ts                  # Loads .env.local for standalone scripts
@@ -239,20 +243,42 @@ cp .env.example .env.local
 Edit `.env.local`:
 
 ```env
+# Providers — generation and embeddings are resolved separately
+AI_PROVIDER=openrouter                      # or "gemini"; inferred if unset
+EMBEDDING_PROVIDER=gemini                   # defaults to AI_PROVIDER
+
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
 GEMINI_API_KEY=your_gemini_api_key
+EMBEDDING_DIMENSION=768                     # must match the Qdrant collection
+
 DATABASE_URL=your_neon_connection_string
 QDRANT_URL=https://your-cluster.qdrant.io   # optional
 QDRANT_API_KEY=your_qdrant_api_key          # optional
 ADMIN_TOKEN=a_long_random_string            # gates the /admin write endpoints
-GEMINI_MODEL=gemini-2.0-flash               # optional — see note below
 HYBRID_ALPHA=0.7                            # optional — dense/keyword weighting
 ```
 
-> **If every answer returns a 429 that never clears**, the free tier on your key
-> grants no daily quota for the configured model (the error names
-> `GenerateRequestsPerDayPerProjectPerModel-FreeTier` with `limit: 0`). Set
-> `GEMINI_MODEL=gemini-flash-latest` and restart. Embeddings have a separate
-> quota and are usually unaffected.
+Verify the whole provider setup before indexing anything:
+
+```bash
+npx tsx scripts/provider-check.ts
+```
+
+It reports the resolved provider for each role, the real vector width the
+embedding model returns, whether related text actually scores above unrelated
+text, and whether streaming works — the four things that must hold for
+retrieval to work at all.
+
+**Provider notes**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `No endpoints found for <model>` | OpenRouter model id retired or misspelled | Pick a current id from [openrouter.ai/models](https://openrouter.ai/models) |
+| `insufficient credit` | OpenRouter balance is $0 and the model is paid | Use a `:free` model, or add credit |
+| A 429 that never clears | Gemini free tier grants no daily quota for that model (`limit: 0`) | Change `GEMINI_MODEL`, or move generation to OpenRouter |
+| `model was not recognised` | Display name used instead of the API id | `gemini-2.5-flash-lite`, not `Gemini 2.5 Flash Lite` |
+| Every answer escalates after a provider switch | Embedding model changed, so stored vectors are from a different vector space | Re-run `npx tsx scripts/ingest.ts` |
 
 ```bash
 # 3. Push database schema
@@ -312,7 +338,7 @@ These are stated explicitly and by design — this is a portfolio/demo project, 
 | Limitation | Detail |
 |---|---|
 | **Free-tier infrastructure** | Qdrant Cloud (~1 GB storage), Neon (0.5 GB, autosuspend on idle), Gemini (RPM/RPD caps) |
-| **Model quota varies by key** | Google grants free-tier quota per model and revises it over time. `GEMINI_MODEL` exists so a dead quota is a config change, not a code change. |
+| **Model availability varies by account** | Free-tier quota and routable model ids change over time on both providers. Provider, model and embedding width are all environment settings, so a dead model is a config change; `scripts/provider-check.ts` tells you which part broke. |
 | **Neon cold start** | First query after ~5 min idle may take 300–500 ms. Handled by the branded loading overlay so it doesn't look like a bug. |
 | **Rate limiting** | In-memory per-session throttle (10 req/min). Resets on server cold-start. Sufficient for demo traffic. |
 | **Eval set is synthetic** | 25 hand-authored Q&A pairs, not production-scale query logs. Still more rigor than 95% of portfolio RAGs. |
