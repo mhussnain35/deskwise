@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useId } from "react";
 import { ShieldCheck } from "lucide-react";
 import { DeskwiseMark } from "@/components/brand/deskwise-logo";
 
@@ -38,11 +38,11 @@ export function SplashScreen() {
 
       <div className="relative flex flex-col items-center gap-5 text-center">
         <div className="splash-rise">
-          <DeskwiseMark className="h-20 w-20 drop-shadow-2xl sm:h-24 sm:w-24" />
+          <LogoWithProgressRing />
         </div>
 
         <div className="splash-rise space-y-2" style={{ animationDelay: "120ms" }}>
-          <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">Deskwise</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">Deskwise</h1>
           <p className="max-w-xs text-sm text-slate-400 sm:max-w-sm sm:text-base">
             AI support answers, grounded in your documentation
           </p>
@@ -57,16 +57,60 @@ export function SplashScreen() {
         </span>
       </div>
 
-      {/* Progress — completes as the splash hands over to the app */}
-      <div className="relative mt-2 h-1 w-48 overflow-hidden rounded-full bg-slate-800 sm:w-64">
-        <div className="splash-progress h-full w-full rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500" />
-      </div>
-
       <p className="relative text-xs text-slate-500">Starting up…</p>
 
       <p className="absolute bottom-[max(1.25rem,env(safe-area-inset-bottom))] text-[11px] text-slate-600">
         Gemini 2.0 Flash · Qdrant · Neon Postgres
       </p>
+    </div>
+  );
+}
+
+/**
+ * The circular mark with the load progress drawn as a ring around it.
+ *
+ * The ring is an SVG stroke rather than a border, because only a stroke can be
+ * drawn *partially*: `pathLength="100"` normalises the circumference to 100
+ * units, so the dash offset animating 100 → 0 sweeps the ring from empty to
+ * full regardless of its pixel radius.
+ */
+function LogoWithProgressRing() {
+  const gradientId = useId();
+
+  return (
+    <div className="relative grid h-[104px] w-[104px] place-items-center sm:h-[120px] sm:w-[120px]">
+      <svg
+        viewBox="0 0 100 100"
+        aria-hidden="true"
+        // Start the sweep at twelve o'clock instead of three.
+        className="absolute inset-0 h-full w-full -rotate-90"
+      >
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="100" y2="100">
+            <stop stopColor="#6366F1" />
+            <stop offset="0.55" stopColor="#A855F7" />
+            <stop offset="1" stopColor="#EC4899" />
+          </linearGradient>
+        </defs>
+
+        {/* Track */}
+        <circle cx="50" cy="50" r="46" fill="none" stroke="#1E293B" strokeWidth="3.5" />
+
+        {/* Progress sweep, completing as the splash hands over */}
+        <circle
+          className="splash-ring"
+          cx="50"
+          cy="50"
+          r="46"
+          fill="none"
+          stroke={`url(#${gradientId})`}
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          pathLength="100"
+        />
+      </svg>
+
+      <DeskwiseMark shape="circle" className="h-16 w-16 drop-shadow-2xl sm:h-[72px] sm:w-[72px]" />
     </div>
   );
 }

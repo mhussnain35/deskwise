@@ -65,13 +65,14 @@ body {
 
 /* --- Splash screen ------------------------------------------------------- */
 
+/* Transform only, deliberately: with `both` fill an opacity-based entrance
+   leaves the content at opacity 0 if the animation never ticks, and the logo is
+   the one thing on this screen that must render unconditionally. */
 @keyframes deskwise-rise {
   from {
-    opacity: 0;
     transform: translateY(10px) scale(0.96);
   }
   to {
-    opacity: 1;
     transform: none;
   }
 }
@@ -85,13 +86,14 @@ body {
   }
 }
 
-/* Fills left-to-right over the splash duration, set by --splash-duration. */
-@keyframes deskwise-progress {
+/* Sweeps the ring around the logo over the splash duration. The circle carries
+   pathLength="100", so the offset runs 100 → 0 whatever its pixel radius. */
+@keyframes deskwise-ring {
   from {
-    transform: scaleX(0);
+    stroke-dashoffset: 100;
   }
   to {
-    transform: scaleX(1);
+    stroke-dashoffset: 0;
   }
 }
 
@@ -115,9 +117,9 @@ body {
   animation: deskwise-fade 700ms ease-out both;
 }
 
-.splash-progress {
-  transform-origin: left center;
-  animation: deskwise-progress var(--splash-duration, 2500ms) cubic-bezier(0.4, 0, 0.2, 1) both;
+.splash-ring {
+  stroke-dasharray: 100;
+  animation: deskwise-ring var(--splash-duration, 2500ms) cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 .splash-glow {

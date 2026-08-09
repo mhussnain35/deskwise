@@ -13,8 +13,16 @@ import React, { useId } from "react";
  * when the mark appears more than once on a page, and every duplicate then
  * renders with whichever definition happened to mount first.
  */
-export function DeskwiseMark({ className = "h-10 w-10" }: { className?: string }) {
+export function DeskwiseMark({
+  className = "h-10 w-10",
+  shape = "squircle",
+}: {
+  className?: string;
+  /** "circle" is used where the mark stands alone, such as the splash screen. */
+  shape?: "squircle" | "circle";
+}) {
   const gradientId = useId();
+  const cornerRadius = shape === "circle" ? 24 : 12;
 
   return (
     <svg
@@ -32,7 +40,7 @@ export function DeskwiseMark({ className = "h-10 w-10" }: { className?: string }
         </linearGradient>
       </defs>
 
-      <rect width="48" height="48" rx="12" fill={`url(#${gradientId})`} />
+      <rect width="48" height="48" rx={cornerRadius} fill={`url(#${gradientId})`} />
 
       {/* Speech bubble */}
       <path
