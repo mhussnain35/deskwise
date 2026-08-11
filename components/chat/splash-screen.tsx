@@ -55,7 +55,7 @@ export function SplashScreen() {
         </span>
       </div>
 
-      <p className="relative text-xs text-slate-500">Starting up…</p>
+      <p className="relative text-xs text-slate-500">Initializing your session…</p>
 
       <p className="absolute bottom-[max(1.25rem,env(safe-area-inset-bottom))] text-[11px] text-slate-600">
         OpenRouter · Qdrant · Neon Postgres
